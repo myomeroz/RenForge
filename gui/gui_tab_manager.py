@@ -1,16 +1,20 @@
 import os
 import gc 
 
+from renforge_logger import get_logger
+logger = get_logger("gui.tab_manager")
+
 try:
 
     from PyQt6.QtWidgets import QApplication, QMessageBox, QTableWidget
     from PyQt6.QtCore import Qt
 except ImportError:
-    print("CRITICAL ERROR: PyQt6 is required for tab management but not found.")
+    logger.critical("PyQt6 is required for tab management but not found.")
     import sys
     sys.exit(1)
 
 import renforge_config as config
+from renforge_models import TabData
 
 def add_new_tab(main_window, file_path, table_widget: QTableWidget, tab_name):
     tab_index = main_window.tab_widget.addTab(table_widget, tab_name)
@@ -19,12 +23,12 @@ def add_new_tab(main_window, file_path, table_widget: QTableWidget, tab_name):
     main_window.tab_data[tab_index] = file_path
 
     main_window.tab_widget.setCurrentIndex(tab_index)
-    print(f"Tab added: Index={tab_index}, Path={file_path}, Name={tab_name}")
-    print(f"  Updated tab_data: {main_window.tab_data}")
+    logger.debug(f"Tab added: Index={tab_index}, Path={file_path}, Name={tab_name}")
+    logger.debug(f"Updated tab_data: {main_window.tab_data}")
 
 def handle_tab_changed(main_window, index):
     if index == -1: 
-        print("Debug: handle_tab_changed - No tabs remaining.")
+        logger.debug("handle_tab_changed - No tabs remaining.")
         main_window.current_file_path = None
 
         main_window._update_ui_state()
@@ -36,15 +40,15 @@ def handle_tab_changed(main_window, index):
     widget_path = widget.property("filePath") if widget else None
 
     if file_path is None and widget_path:
-        print(f"Info: handle_tab_changed - Path for index {index} not in tab_data, using widget property: {widget_path}")
+        logger.info(f"handle_tab_changed - Path for index {index} not in tab_data, using widget property: {widget_path}")
         file_path = widget_path
         main_window.tab_data[index] = file_path 
     elif file_path and widget_path and file_path != widget_path:
-        print(f"Warning: handle_tab_changed - Path mismatch! Index: {index}, tab_data: '{file_path}', widget: '{widget_path}'. Trusting widget path.")
+        logger.warning(f"handle_tab_changed - Path mismatch! Index: {index}, tab_data: '{file_path}', widget: '{widget_path}'. Trusting widget path.")
         file_path = widget_path
         main_window.tab_data[index] = file_path 
     elif file_path is None and widget_path is None:
-        print(f"ERROR: handle_tab_changed - Cannot determine file path for tab index {index}. Critical state!")
+        logger.critical(f"handle_tab_changed - Cannot determine file path for tab index {index}. Critical state!")
         QMessageBox.critical(main_window, "Tab Error", f"Critical error: Could not determine file for tab {index}.")
 
         main_window.current_file_path = None
@@ -52,9 +56,9 @@ def handle_tab_changed(main_window, index):
         main_window._display_current_item_status()
         return
 
-    file_data = main_window.file_data.get(file_path)
+    file_data: TabData = main_window.file_data.get(file_path)
     if not file_data:
-        print(f"ERROR: handle_tab_changed - Data for path '{file_path}' (Index: {index}) not found in file_data!")
+        logger.critical(f"handle_tab_changed - Data for path '{file_path}' (Index: {index}) not found in file_data!")
 
         QMessageBox.critical(main_window, "Tab Data Error", f"Critical error: Data inconsistency detected for tab '{os.path.basename(file_path)}'.\nPlease try closing and reloading the file.")
         main_window.current_file_path = None
@@ -70,7 +74,8 @@ def handle_tab_changed(main_window, index):
     main_window._update_ui_state()
     main_window._display_current_item_status()
 
-    table_widget = file_data.get('table_widget')
+    # table_widget is attached dynamically in gui_file_manager
+    table_widget = getattr(file_data, 'table_widget', None)
     if table_widget:
         table_widget.setFocus()
 
@@ -91,21 +96,21 @@ def find_tab_by_path(main_window, file_path):
     return None 
 
 def close_tab(main_window, index):
-    print(f"Debug: close_tab initiated for index {index}")
+    logger.debug(f"close_tab initiated for index {index}")
     if not (0 <= index < main_window.tab_widget.count()):
-        print(f"Debug: Invalid index {index} passed to close_tab.")
+        logger.debug(f"Invalid index {index} passed to close_tab.")
         return
 
     file_path = main_window.tab_data.get(index)
     widget_to_remove = main_window.tab_widget.widget(index) 
 
     if not file_path:
-        print(f"Warning: No file path found in tab_data for index {index}. Closing tab anyway.")
+        logger.warning(f"No file path found in tab_data for index {index}. Closing tab anyway.")
 
     elif file_path in main_window.file_data:
-        file_data = main_window.file_data[file_path]
-        if file_data.get('is_modified', False):
-            base_name = os.path.basename(file_data.get('output_path', file_path))
+        file_data: TabData = main_window.file_data[file_path]
+        if file_data.is_modified:
+            base_name = os.path.basename(file_data.output_path or file_path)
             msg_box = QMessageBox(main_window)
             msg_box.setWindowTitle("Save Changes?")
             msg_box.setText(f"File '{base_name}' has unsaved changes.")
@@ -134,35 +139,37 @@ def close_tab(main_window, index):
                 main_window.statusBar().showMessage("Tab closing cancelled.", 3000)
                 return 
 
-    print(f"Closing tab: Index={index}, Path={file_path}")
+    logger.debug(f"Closing tab: Index={index}, Path={file_path}")
 
     if file_path and file_path in main_window.file_data:
-        print(f"  Removing data for {file_path} from file_data...")
+        logger.debug(f"Removing data for {file_path} from file_data...")
         try:
 
-            data_entry = main_window.file_data[file_path]
-            data_entry.get('items', []).clear()
-            data_entry.get('lines', []).clear()
-            data_entry.get('breakpoints', set()).clear()
+            data_entry: TabData = main_window.file_data[file_path]
+            data_entry.items.clear()
+            data_entry.lines.clear()
+            data_entry.breakpoints.clear()
 
-            data_entry['table_widget'] = None
+            # Dynamic attribute cleanup
+            if hasattr(data_entry, 'table_widget'):
+                data_entry.table_widget = None
         except Exception as e:
-            print(f"  Warning: Error during pre-removal cleanup: {e}")
+            logger.warning(f"Error during pre-removal cleanup: {e}")
         del main_window.file_data[file_path]
-        print(f"  Data for {file_path} removed.")
+        logger.debug(f"Data for {file_path} removed.")
 
-    print(f"  Removing tab {index} from QTabWidget...")
+    logger.debug(f"Removing tab {index} from QTabWidget...")
 
     main_window.tab_widget.removeTab(index)
-    print(f"  Tab {index} removed.")
+    logger.debug(f"Tab {index} removed.")
 
-    print("  Rebuilding tab_data...")
+    logger.debug("Rebuilding tab_data...")
     rebuild_tab_data(main_window)
-    print(f"  Rebuilt tab_data: {main_window.tab_data}")
+    logger.debug(f"Rebuilt tab_data: {main_window.tab_data}")
 
-    print("  Running garbage collector...")
+    logger.debug("Running garbage collector...")
     collected = gc.collect()
-    print(f"  GC collected {collected} objects.")
+    logger.debug(f"GC collected {collected} objects.")
 
 def close_current_tab(main_window):
     current_index = main_window.tab_widget.currentIndex()
@@ -180,20 +187,20 @@ def rebuild_tab_data(main_window):
             if path:
                 new_tab_data[i] = path
             else:
-                print(f"ERROR (rebuild_tab_data): Widget at index {i} has no 'filePath' property!")
+                logger.error(f"rebuild_tab_data: Widget at index {i} has no 'filePath' property!")
         else:
-             print(f"ERROR (rebuild_tab_data): Could not get widget at index {i}!")
+             logger.error(f"rebuild_tab_data: Could not get widget at index {i}!")
     main_window.tab_data = new_tab_data
 
 def handle_tab_moved(main_window, from_index, to_index):
-    print(f"Debug: Tab moved from {from_index} to {to_index}. Rebuilding tab_data...")
+    logger.debug(f"Tab moved from {from_index} to {to_index}. Rebuilding tab_data...")
     rebuild_tab_data(main_window)
-    print(f"Debug: Rebuilt tab_data after move: {main_window.tab_data}")
+    logger.debug(f"Rebuilt tab_data after move: {main_window.tab_data}")
 
     current_index_after_move = main_window.tab_widget.currentIndex()
     if current_index_after_move != -1:
         new_path_at_current_index = main_window.tab_data.get(current_index_after_move)
         if new_path_at_current_index != main_window.current_file_path:
-             print(f"Debug: Updating current_file_path after tab move to '{new_path_at_current_index}'")
+             logger.debug(f"Updating current_file_path after tab move to '{new_path_at_current_index}'")
              main_window.current_file_path = new_path_at_current_index
 

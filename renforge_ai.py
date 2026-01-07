@@ -6,8 +6,12 @@ import json
 from pathlib import Path
 import socket
 
+from renforge_logger import get_logger
+logger = get_logger("ai")
+
 import renforge_config as config
 import renforge_settings as set
+from renforge_exceptions import APIKeyError, ModelError, TranslationError, NetworkError
 
 genai = None
 GoogleTranslator = None
@@ -21,10 +25,10 @@ def is_internet_available(host="8.8.8.8", port=53, timeout=1):
     try:
         socket.setdefaulttimeout(timeout)
         socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
-        print("--- [is_internet_available] Check successful. ---")
+        logger.debug("[is_internet_available] Check successful.")
         return True
     except socket.error as ex:
-        print(f"--- [is_internet_available] Check failed: {ex} ---")
+        logger.debug(f"[is_internet_available] Check failed: {ex}")
         return False
 
 def _lazy_import_genai():
@@ -36,14 +40,14 @@ def _lazy_import_genai():
 
     if genai is None:
         try:
-            print("Lazy importing google.generativeai...")
+            logger.debug("Lazy importing google.generativeai...")
             import google.generativeai as genai_local
             genai = genai_local
-            print("Lazy import successful: google.generativeai")
+            logger.debug("Lazy import successful: google.generativeai")
             no_ai = False 
             return genai
         except ImportError:
-            print("ERROR: Failed to lazy import google.generativeai. AI features disabled.")
+            logger.error("Failed to lazy import google.generativeai. AI features disabled.")
 
             try:
                 from PyQt6.QtWidgets import QApplication, QMessageBox
@@ -55,7 +59,7 @@ def _lazy_import_genai():
                                        "Установите ее: pip install google-generativeai\n"
                                        "Функции ИИ будут недоступны.")
             except ImportError:
-                 print("INFO: PyQt6 not found, skipping GUI warning for google.generativeai import error.")
+                 logger.info("PyQt6 not found, skipping GUI warning for google.generativeai import error.")
             no_ai = True 
             return None
     return genai
@@ -69,13 +73,13 @@ def _lazy_import_translator():
 
     if GoogleTranslator is None:
         try:
-            print("Lazy importing deep_translator...")
+            logger.debug("Lazy importing deep_translator...")
             from deep_translator import GoogleTranslator as Translator_local
             GoogleTranslator = Translator_local
-            print("Lazy import successful: deep_translator.GoogleTranslator")
+            logger.debug("Lazy import successful: deep_translator.GoogleTranslator")
             return GoogleTranslator
         except ImportError:
-            print("ERROR: Failed to lazy import deep_translator. Translate features disabled.")
+            logger.error("Failed to lazy import deep_translator. Translate features disabled.")
 
             try:
                 from PyQt6.QtWidgets import QApplication, QMessageBox
@@ -86,19 +90,19 @@ def _lazy_import_translator():
                                    "Установите ее: pip install deep-translator\n"
                                    "Функции перевода Google будут недоступны.")
             except ImportError:
-                 print("INFO: PyQt6 not found, skipping GUI warning for deep_translator import error.")
+                 logger.info("PyQt6 not found, skipping GUI warning for deep_translator import error.")
             return None 
     return GoogleTranslator
 
 def get_google_languages() -> dict | None:
 
     if not is_internet_available():
-        print("Cannot get languages: Internet connection not available.")
+        logger.warning("Cannot get languages: Internet connection not available.")
         return None
 
     Translator = _lazy_import_translator()
     if Translator is None:
-        print("Cannot get languages: deep_translator not available.")
+        logger.warning("Cannot get languages: deep_translator not available.")
         return None
     try:
 
@@ -107,29 +111,29 @@ def get_google_languages() -> dict | None:
         code_name_dict = {code: name for name, code in name_code_dict.items()}
         return code_name_dict
     except Exception as e:
-        print(f"Error getting supported languages from deep_translator: {e}")
+        logger.error(f"Error getting supported languages from deep_translator: {e}")
         return None
 
 def load_api_key():
 
-    print("--- [load_api_key] Called. Attempting to load settings... ---") 
+    logger.debug("[load_api_key] Called. Attempting to load settings...") 
     settings = set.load_settings() 
 
     if not isinstance(settings, dict):
-        print(f"--- [load_api_key] ERROR: set.load_settings did not return a dictionary (returned {type(settings)}). Cannot get 'api_key'. ---")
+        logger.error(f"[load_api_key] set.load_settings did not return a dictionary (returned {type(settings)}).")
         return None
     key = settings.get("api_key") 
     if key:
 
         if isinstance(key, str) and key.strip():
             masked_key = f"...{key[-4:]}" if len(key) >=4 else key
-            print(f"--- [load_api_key] Found valid key ending with {masked_key} in settings. Type: {type(key)}. ---") 
+            logger.debug(f"[load_api_key] Found valid key ending with {masked_key}.") 
             return key 
         else:
-            print(f"--- [load_api_key] Found 'api_key' in settings, but it's not a valid non-empty string. Type: {type(key)}. Value: '{key}'. Returning None. ---")
+            logger.warning(f"[load_api_key] Found 'api_key' but it's not a valid non-empty string. Returning None.")
             return None 
     else:
-        print(f"--- [load_api_key] Key 'api_key' not found or is None in loaded settings. Returning None. ---") 
+        logger.debug(f"[load_api_key] Key 'api_key' not found or is None. Returning None.") 
         return None 
 
 def save_api_key(api_key):
@@ -138,7 +142,7 @@ def save_api_key(api_key):
 
     if not isinstance(settings, dict):
          settings = {}
-         print("Warning: set.load_settings не вернул словарь в save_api_key. Начинаем с чистого листа.")
+         logger.warning("set.load_settings did not return dict in save_api_key. Starting fresh.")
 
     action_taken = "unchanged" 
     current_api_key = settings.get("api_key")
@@ -147,33 +151,33 @@ def save_api_key(api_key):
         if current_api_key != api_key:
             settings["api_key"] = api_key 
             action_taken = "saved" 
-            print(f"Подготовка к сохранению/обновлению API ключа в {config.SETTINGS_FILE_PATH}")
+            logger.debug(f"Preparing to save/update API key in {config.SETTINGS_FILE_PATH}")
         else:
 
-            print(f"API ключ не изменился, действие не требуется.")
+            logger.debug(f"API key unchanged, no action needed.")
             return "unchanged", settings 
     else: 
         if current_api_key is not None:
             settings.pop("api_key", None) 
             action_taken = "removed" 
-            print(f"Подготовка к удалению API ключа из {config.SETTINGS_FILE_PATH}")
+            logger.debug(f"Preparing to remove API key from {config.SETTINGS_FILE_PATH}")
         else:
 
-            print(f"API ключ отсутствует в настройках, удаление не требуется.")
+            logger.debug(f"API key not in settings, no removal needed.")
             return "unchanged", settings 
 
     if action_taken in ["saved", "removed"]:
-        print(f"Попытка сохранения настроек: {settings}")
+        logger.debug(f"Attempting to save settings...")
 
         if set.save_settings(settings): 
             if action_taken == "saved":
-                print(f"API ключ успешно сохранен/обновлен.")
+                logger.info(f"API key saved/updated successfully.")
             elif action_taken == "removed":
-                print(f"API ключ успешно удален.")
+                logger.info(f"API key removed successfully.")
             return action_taken, settings 
         else:
 
-            print(f"Ошибка при сохранении файла настроек '{config.SETTINGS_FILE_PATH}' во время обновления API ключа.")
+            logger.error(f"Error saving settings file during API key update.")
 
             return "error", settings 
     else:
@@ -187,20 +191,19 @@ def prompt_for_api_key(force_prompt=False):
     if current_key and not force_prompt:
         return current_key
 
-    print("-" * 30)
-    print("Требуется API ключ Google Gemini.")
+    logger.info("Google Gemini API key required.")
     if current_key:
-        print(f"Текущий ключ: ...{current_key[-4:]}")
+        logger.info(f"Current key: ...{current_key[-4:]}")
         try:
-            change = input("Хотите изменить ключ? (y/n): ").lower()
+            change = input("Change key? (y/n): ").lower()
             if change != 'y':
                 return current_key
         except (EOFError, KeyboardInterrupt):
-             print("\nВвод отменен.")
+             logger.info("Input cancelled.")
              return current_key 
 
     else:
-        print("Ключ не найден.")
+        logger.info("Key not found.")
 
     while True:
         try:
@@ -210,45 +213,45 @@ def prompt_for_api_key(force_prompt=False):
                     return new_key
                 else:
 
-                    print("Повторите попытку.")
+                    logger.warning("Retry.")
                     continue 
             else:
-                print("Ключ не может быть пустым.")
+                logger.warning("Key cannot be empty.")
         except EOFError:
-            print("\nВвод отменен.")
+            logger.info("Input cancelled.")
             return None 
         except KeyboardInterrupt:
-            print("\nВвод прерван.")
+            logger.info("Input interrupted.")
             return None 
 
 def get_available_models(force_refresh=False):
 
     global _available_models_cache, no_ai, genai
-    print(f"--- [get_available_models] Called. Force refresh: {force_refresh} ---")
+    logger.debug(f"[get_available_models] Called. Force refresh: {force_refresh}")
 
     if _available_models_cache and not force_refresh:
-        print(f"--- [get_available_models] Returning cached models: {len(_available_models_cache)} models ---")
+        logger.debug(f"[get_available_models] Returning cached models: {len(_available_models_cache)} models")
         return _available_models_cache
 
     genai_module = _lazy_import_genai()
     if no_ai or genai_module is None:
-        print("--- [get_available_models] Failed: AI module not available or import failed. ---")
+        logger.warning("[get_available_models] Failed: AI module not available.")
         return None
 
     if not load_api_key():
-         print("--- [get_available_models] Failed: API key not configured. ---")
+         logger.warning("[get_available_models] Failed: API key not configured.")
          no_ai = True 
          _available_models_cache = None 
          return None
 
     if not is_internet_available():
-        print("--- [get_available_models] Failed: Internet connection not available. ---")
+        logger.warning("[get_available_models] Failed: Internet connection not available.")
         no_ai = True 
         _available_models_cache = None 
         return None
 
     try:
-        print("--- [get_available_models] Attempting to list models via API... ---")
+        logger.debug("[get_available_models] Attempting to list models via API...")
         available_models = []
 
         for m in genai_module.list_models():
@@ -261,23 +264,23 @@ def get_available_models(force_refresh=False):
 
             available_models.sort()
             _available_models_cache = available_models 
-            print(f"--- [get_available_models] Success. Found {len(available_models)} models. Caching result. ---")
+            logger.info(f"[get_available_models] Success. Found {len(available_models)} models.")
 
             return available_models
         else:
-            print("--- [get_available_models] Warning: API returned no suitable models. ---")
+            logger.warning("[get_available_models] API returned no suitable models.")
             _available_models_cache = [] 
             return []
     except ImportError:
 
-        print("--- [get_available_models] ERROR: google.generativeai not imported. ---")
+        logger.error("[get_available_models] google.generativeai not imported.")
         no_ai = True
         _available_models_cache = None
         return None
     except Exception as e:
 
         error_str = str(e).lower()
-        print(f"--- [get_available_models] ERROR: Failed to list models from Gemini API: {e} ---")
+        logger.error(f"[get_available_models] Failed to list models from Gemini API: {e}")
         no_ai = True 
         _available_models_cache = None 
 
@@ -288,11 +291,11 @@ def get_available_models(force_refresh=False):
         is_auth_error = any(keyword in error_str for keyword in auth_error_keywords)
 
         if is_network_error:
-             print("--- [get_available_models] Error seems network-related. Check internet connection. ---")
+             logger.warning("[get_available_models] Error seems network-related.")
         elif is_auth_error:
-             print("--- [get_available_models] Error likely related to API Key. ---")
+             logger.warning("[get_available_models] Error likely related to API Key.")
         else:
-             print("--- [get_available_models] An unexpected error occurred. ---")
+             logger.warning("[get_available_models] An unexpected error occurred.")
 
         return None
 
@@ -301,28 +304,27 @@ def configure_gemini(model_name_to_use=None):
     global gemini_model, no_ai, genai 
 
     if gemini_model is None or no_ai:
-        print("--- [configure_gemini] Checking internet connection before configuration attempt... ---")
+        logger.debug("[configure_gemini] Checking internet connection...")
         if not is_internet_available():
-            print("--- [configure_gemini] Failed: Internet connection not available. ---")
+            logger.warning("[configure_gemini] Failed: Internet connection not available.")
             no_ai = True
             gemini_model = None
 
             return False
 
     if genai and gemini_model and not no_ai and gemini_model.model_name.endswith(model_name_to_use):
-        print(f"--- Skipping configure_gemini: Already configured for {model_name_to_use} ---")
+        logger.debug(f"Skipping configure_gemini: Already configured for {model_name_to_use}")
         return True 
 
     if model_name_to_use is None:
         model_name_to_use = config.DEFAULT_MODEL_NAME
-    print(f"Target model: {model_name_to_use}") 
+    logger.debug(f"Target model: {model_name_to_use}") 
 
     genai_module = _lazy_import_genai()
     if genai_module is None:
         no_ai = True 
         gemini_model = None 
-        print("configure_gemini failed: google.generativeai module not imported.")
-        print("--- Ending configure_gemini (failure: no module) ---") 
+        logger.error("configure_gemini failed: google.generativeai module not imported.")
         return False 
 
     api_key = load_api_key()
@@ -332,37 +334,34 @@ def configure_gemini(model_name_to_use=None):
     if api_key:
 
         masked_key = f"...{api_key[-4:]}" if len(api_key) >= 4 else api_key
-        print(f"API Key loaded successfully (ends with: {masked_key})") 
+        logger.debug(f"API Key loaded successfully (ends with: {masked_key})") 
     else:
-        print("API Key not found in settings.") 
+        logger.warning("API Key not found in settings.") 
         if not is_gui:
-            print("GUI not detected, prompting for API key in console...") 
+            logger.info("GUI not detected, prompting for API key in console...") 
             api_key = prompt_for_api_key(force_prompt=True)
         else:
 
             no_ai = True
             gemini_model = None
-            print("configure_gemini failed: API Key missing (GUI detected). User should add via Settings.")
-
-            print("--- Ending configure_gemini (failure: no key in GUI) ---") 
+            logger.warning("configure_gemini failed: API Key missing (GUI detected).")
             return False 
 
     if not api_key and not is_gui:
-        print("\nКлюч API не найден в файле настроек (configure_gemini). Запрос ключа...")
+        logger.info("API key not found in settings. Prompting...")
         api_key = prompt_for_api_key(force_prompt=True) 
 
     if not api_key:
         no_ai = True
         gemini_model = None
-        print("configure_gemini failed: API Key is still missing after prompt (or prompt cancelled).")
-        print("--- Ending configure_gemini (failure: no key after prompt) ---") 
+        logger.warning("configure_gemini failed: API Key still missing after prompt.")
         return False 
 
     try:
 
-        print("--- [configure_gemini] Checking internet connection before creating model object... ---")
+        logger.debug("[configure_gemini] Checking internet connection before creating model object...")
         if not is_internet_available():
-             print("--- [configure_gemini] Failed: Internet connection lost before creating model object. ---")
+             logger.warning("[configure_gemini] Failed: Internet connection lost before creating model.")
              no_ai = True
              gemini_model = None
 
@@ -372,28 +371,27 @@ def configure_gemini(model_name_to_use=None):
                     from PyQt6.QtWidgets import QMessageBox
                     QMessageBox.critical(None, "Сетевая ошибка Gemini", "Не удалось создать объект модели Gemini.\nПроверьте ваше интернет-соединение.")
                 except Exception as msg_err:
-                    print(f"Could not show GUI error message box: {msg_err}")
+                    logger.error(f"Could not show GUI error message box: {msg_err}")
              return False
         masked_key_for_config = f"...{api_key[-4:]}" if len(api_key) >= 4 else api_key
-        print(f"Configuring genai with key ending in {masked_key_for_config}") 
+        logger.debug(f"Configuring genai with key ending in {masked_key_for_config}") 
         genai_module.configure(api_key=api_key)
-        print("genai.configure called successfully.") 
+        logger.debug("genai.configure called successfully.") 
 
-        print(f"Attempting to create/verify model: {model_name_to_use}") 
+        logger.debug(f"Attempting to create/verify model: {model_name_to_use}") 
 
         gemini_model = genai_module.GenerativeModel(
              model_name_to_use
         )
 
-        print(f"--- [configure_gemini] Inside try block AFTER assignment: gemini_model is None={gemini_model is None}, type={type(gemini_model)} ---") 
+        logger.debug(f"[configure_gemini] Model object created. gemini_model is None={gemini_model is None}") 
 
-        print(f"Model '{model_name_to_use}' object created successfully (further verification may occur on first use).") 
+        logger.info(f"Model '{model_name_to_use}' object created successfully.") 
         no_ai = False 
-        print("--- Ending configure_gemini (success, model object created) ---") 
         return True 
     except ImportError:
 
-        print("--- [configure_gemini] ERROR: google.generativeai not imported. ---")
+        logger.error("[configure_gemini] google.generativeai not imported.")
         no_ai = True
         gemini_model = None
         return False
@@ -401,8 +399,7 @@ def configure_gemini(model_name_to_use=None):
 
         no_ai = True 
         gemini_model = None 
-        error_message = f"Error during Gemini configuration or model creation: {e}"
-        print(error_message) 
+        logger.error(f"Error during Gemini configuration or model creation: {e}")
 
         error_str = str(e).lower()
         gui_message_title = "Ошибка Gemini"
@@ -415,23 +412,23 @@ def configure_gemini(model_name_to_use=None):
         is_auth_error = any(keyword in error_str for keyword in auth_error_keywords)
 
         if is_network_error:
-            print("Error seems network-related during configuration. Check internet connection.")
+            logger.warning("Error seems network-related during configuration.")
             gui_message_title = "Сетевая ошибка Gemini"
             gui_message_text = f"Не удалось связаться с Gemini API.\nПроверьте ваше интернет-соединение.\n\nОшибка: {e}"
         elif is_auth_error:
 
-            print("Error likely related to API Key validity or permissions.")
+            logger.warning("Error likely related to API Key validity or permissions.")
             gui_message_title = "Ошибка API ключа Gemini"
             gui_message_text = (f"Не удалось настроить Gemini API.\n"
                                 f"Проверьте правильность и действительность вашего API ключа и доступ к модели '{model_name_to_use}'.\n\n"
                                 f"Ошибка: {e}")
         elif ("not found" in error_str) and model_name_to_use in str(e):
 
-             print(f"Error: Model '{model_name_to_use}' not found or unavailable for this key.")
+             logger.warning(f"Error: Model '{model_name_to_use}' not found or unavailable.")
              gui_message_title = "Модель Gemini не найдена"
              gui_message_text = f"Указанная модель '{model_name_to_use}' не найдена или недоступна для вашего ключа.\nПроверьте имя модели или выберите другую.\n\nОшибка: {e}"
         else:
-             print("An unexpected error occurred during configuration.")
+             logger.warning("An unexpected error occurred during configuration.")
 
         is_gui = 'PyQt6.QtWidgets' in sys.modules and sys.modules['PyQt6.QtWidgets'].QApplication.instance() is not None
         if is_gui:
@@ -439,9 +436,8 @@ def configure_gemini(model_name_to_use=None):
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.critical(None, gui_message_title, gui_message_text)
             except Exception as msg_err:
-                print(f"Could not show GUI error message box: {msg_err}")
+                logger.error(f"Could not show GUI error message box: {msg_err}")
 
-        print("--- Ending configure_gemini (failure: exception) ---")
         return False 
 
 def refine_text_with_gemini(original_text, current_text, user_instruction, context_info,
@@ -452,7 +448,7 @@ def refine_text_with_gemini(original_text, current_text, user_instruction, conte
         return (None, "Модель Gemini не инициализирована или недоступна.")
 
     if not is_internet_available():
-        print("--- [refine_text_with_gemini] Failed: Internet connection not available. ---")
+        logger.warning("[refine_text_with_gemini] Failed: Internet connection not available.")
 
         return (None, "Отсутствует подключение к интернету для запроса к Gemini.")
 
@@ -530,13 +526,13 @@ def refine_text_with_gemini(original_text, current_text, user_instruction, conte
     retries = 3
     for attempt in range(retries):
         try:
-            print(f"--- DEBUG: Before generate_content call (Attempt {attempt+1}): gemini_model type = {type(gemini_model)}, value = {gemini_model} ---")
+            logger.debug(f"Before generate_content call (Attempt {attempt+1}): gemini_model type = {type(gemini_model)}")
             if not hasattr(gemini_model, 'generate_content') or not callable(gemini_model.generate_content):
                  error_msg = f"Ошибка: gemini_model (type: {type(gemini_model)}) не имеет вызываемого метода 'generate_content'."
-                 print(f"  {error_msg}")
+                 logger.error(error_msg)
                  no_ai = True 
                  return (None, error_msg)
-            print(f"  Attempt {attempt + 1}/{retries}: Sending refinement request to Gemini...")
+            logger.debug(f"Attempt {attempt + 1}/{retries}: Sending refinement request to Gemini...")
 
             safety_settings = [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -546,17 +542,16 @@ def refine_text_with_gemini(original_text, current_text, user_instruction, conte
             ]
             try:
                  response = gemini_model.generate_content(prompt, safety_settings=safety_settings)
-                 print(f"--- DEBUG: API call returned. Response type: {type(response)} ---")
+                 logger.debug(f"API call returned. Response type: {type(response)}")
             except TypeError as te:
 
-                 print(f"--- CRITICAL TYPE ERROR during API call: {te} ---")
-                 print(f"    gemini_model type at time of error: {type(gemini_model)}")
-                 print(f"    gemini_model.generate_content type: {type(gemini_model.generate_content) if hasattr(gemini_model, 'generate_content') else 'N/A'}")
+                 logger.critical(f"CRITICAL TYPE ERROR during API call: {te}")
+                 logger.debug(f"gemini_model type at time of error: {type(gemini_model)}")
                  no_ai = True 
                  return (None, f"TypeError при вызове Gemini API: {te}. Проверьте состояние модели.")
             except Exception as api_call_e:
 
-                 print(f"--- ERROR during actual API call: {type(api_call_e).__name__}: {api_call_e} ---")
+                 logger.error(f"ERROR during actual API call: {type(api_call_e).__name__}: {api_call_e}")
 
                  raise api_call_e
 
@@ -570,15 +565,14 @@ def refine_text_with_gemini(original_text, current_text, user_instruction, conte
                 elif refined_text.startswith('"') and refined_text.endswith('"'):
                     refined_text = refined_text[1:-1].strip()
 
-                print(f"  Gemini suggested: \"{refined_text}\"")
+                logger.debug(f"Gemini suggested: \"{refined_text}\"")
 
                 text_before_refinement = current_text
                 original_vars = re.findall(r'(\[.*?\])', text_before_refinement) 
                 refined_vars = re.findall(r'(\[.*?\])', refined_text)
 
                 if original_vars != refined_vars:
-                     warning_msg = f"  Warning: Variable set [...] might have changed! Original: {original_vars}, Refined: {refined_vars}"
-                     print(warning_msg)
+                     logger.warning(f"Variable set [...] might have changed! Original: {original_vars}, Refined: {refined_vars}")
 
                 return (refined_text, None) 
             else:
@@ -602,23 +596,23 @@ def refine_text_with_gemini(original_text, current_text, user_instruction, conte
                           error_msg += " Reason unknown."
 
                 except Exception as feedback_error:
-                    print(f"  Error retrieving feedback from Gemini response: {feedback_error}")
+                    logger.warning(f"Error retrieving feedback from Gemini response: {feedback_error}")
                     error_msg += " Could not retrieve specific reason."
 
-                print(f"  Warning: {error_msg}")
+                logger.warning(error_msg)
 
                 if attempt + 1 == retries:
                     return (None, error_msg)
 
                 delay = config.REQUEST_DELAY_SECONDS * (attempt + 2)
-                print(f"  Retrying after {delay} seconds...")
+                logger.debug(f"Retrying after {delay} seconds...")
                 time.sleep(delay)
                 continue 
 
         except Exception as e:
 
             error_msg = f"Error calling Gemini API (Attempt {attempt + 1}/{retries}): {e}"
-            print(f"  {error_msg}")
+            logger.error(error_msg)
             error_str = str(e).lower()
 
             auth_error_keywords = ["api key", "permission denied", "authentication", "invalid", "403", "401"]
@@ -631,13 +625,13 @@ def refine_text_with_gemini(original_text, current_text, user_instruction, conte
 
             if is_auth_error:
                  final_error = f"Authentication/Permission error with Gemini API: {e}. Check your API key."
-                 print(f"  {final_error}")
+                 logger.error(final_error)
                  no_ai = True 
                  return (None, final_error)
 
             if is_network_error:
                  final_error = f"Network error contacting Gemini API (during request): {e}."
-                 print(f"  {final_error}")
+                 logger.error(final_error)
 
                  return (None, final_error)
 
@@ -647,7 +641,7 @@ def refine_text_with_gemini(original_text, current_text, user_instruction, conte
 
             elif attempt + 1 == retries:
                 final_error = f"Failed to refine text after {retries} attempts. Last error: {e}"
-                print(f"  {final_error}")
+                logger.error(final_error)
 
                 return (None, final_error)
             else:

@@ -4,6 +4,8 @@ Handles updating the main window status bar.
 """
 import os
 from locales import tr
+from renforge_logger import get_logger
+logger = get_logger("gui.status_updater")
 
 
 def update_status_bar(main_window):
@@ -17,7 +19,7 @@ def update_status_bar(main_window):
 
     if not current_file_data:
         main_window.statusBar().showMessage(tr("active_tab_data_error"))
-        print("Error (update_status_bar): Could not get file data for current tab.")
+        logger.error("update_status_bar: Could not get file data for current tab.")
         return
 
     status_parts = []
@@ -27,14 +29,14 @@ def update_status_bar(main_window):
         status_parts.append(tr("status_project", name=project_name))
 
     file_path = main_window.current_file_path 
-    output_path = current_file_data.get('output_path', file_path)
+    output_path = current_file_data.output_path or file_path
     base_name = os.path.basename(output_path) if output_path else "<???>"
     file_status = tr("status_file", name=base_name)
-    if current_file_data.get('is_modified', False):
+    if current_file_data.is_modified:
         file_status += "*"
     status_parts.append(file_status)
 
-    current_mode = current_file_data.get('mode', '?')
+    current_mode = current_file_data.mode or '?'
     if current_mode == "direct":
         mode_text = tr("status_mode_direct")
     elif current_mode == "translate":
@@ -43,31 +45,37 @@ def update_status_bar(main_window):
         mode_text = tr("status_mode_unknown")
     status_parts.append(tr("status_mode", mode=mode_text))
 
-    current_items = current_file_data.get('items')
+    current_items = current_file_data.items
     item_count = len(current_items) if current_items is not None else 0
     status_parts.append(tr("status_items", count=item_count))
 
-    current_idx = current_file_data.get('item_index', -1)
+    current_idx = getattr(current_file_data, 'item_index', -1)
     if current_items and 0 <= current_idx < item_count:
         item = current_items[current_idx]
         status_parts.append(tr("status_selected", current=current_idx + 1, total=item_count))
 
-        line_num_key = 'translated_line_index' if current_mode == "translate" else 'line_index'
-        line_num = item.get(line_num_key)
+        # ParsedItem uses line_index for direct mode, and has translated_line_index for translate mode
+        if current_mode == "translate":
+            line_num = getattr(item, 'line_index', None)  # translated line index
+        else:
+            line_num = getattr(item, 'line_index', None)
         if line_num is not None:
             status_parts.append(tr("status_line", num=line_num + 1))
 
-        char_tag = item.get('character_trans') or item.get('character_tag') or "" 
+        char_tag = getattr(item, 'character_trans', None) or getattr(item, 'character_tag', None) or ""
         if char_tag:
             status_parts.append(tr("status_character", tag=char_tag))
 
-        item_type = item.get('type', '?')
+        item_type = getattr(item, 'type', '?')
+        # Convert enum to string if needed
+        if hasattr(item_type, 'value'):
+            item_type = item_type.value
         status_parts.append(tr("status_type", type=item_type))
 
         status_flags = []
-        if item.get('has_breakpoint', False):
+        if getattr(item, 'has_breakpoint', False):
             status_flags.append(tr("status_marker"))
-        if item.get('is_modified_session', False):
+        if getattr(item, 'is_modified_session', False):
             status_flags.append(tr("status_modified"))
         if status_flags:
             status_parts.append(f"[{'|'.join(status_flags)}]")

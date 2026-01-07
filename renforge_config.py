@@ -76,4 +76,7 @@ __all__ = [
 
 ]
 
-print("renforge_config.py loaded") 
+# Import logger at the end to avoid circular imports
+from renforge_logger import get_logger
+_logger = get_logger("config")
+_logger.debug("renforge_config.py loaded") 

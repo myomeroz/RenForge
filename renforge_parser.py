@@ -2,22 +2,29 @@
 
 import re
 import renforge_config as config
+from renforge_logger import get_logger
+from renforge_enums import ContextType, ItemType
+from renforge_models import ParsedItem
+from renforge_exceptions import ParseError, FormatError
+
+# Logger for this module
+logger = get_logger("parser")
+
+# Backward compatibility aliases - these map to enum values
+CONTEXT_GLOBAL = ContextType.GLOBAL
+CONTEXT_SCREEN = ContextType.SCREEN
+CONTEXT_LABEL = ContextType.LABEL
+CONTEXT_PYTHON = ContextType.PYTHON
+CONTEXT_TRANSLATE = ContextType.TRANSLATE
+CONTEXT_TRANSLATE_STRINGS = ContextType.TRANSLATE_STRINGS
+CONTEXT_MENU = ContextType.MENU
+CONTEXT_VARIABLE = ContextType.VARIABLE
 
 
-CONTEXT_GLOBAL = 'global'
-CONTEXT_SCREEN = 'screen'
-CONTEXT_LABEL = 'label' 
-CONTEXT_PYTHON = 'python'
-CONTEXT_TRANSLATE = 'translate' 
-CONTEXT_TRANSLATE_STRINGS = 'translate_strings' 
-CONTEXT_MENU = 'menu' 
-CONTEXT_VARIABLE = 'variable' 
-
-
-CONTEXT_IMAGE_DEF = 'image_def'
-CONTEXT_TRANSFORM_DEF = 'transform_def'
-CONTEXT_STYLE_DEF = 'style_def'
-CONTEXT_DEFINE_DEF = 'define_def' 
+CONTEXT_IMAGE_DEF = ContextType.IMAGE_DEF
+CONTEXT_TRANSFORM_DEF = ContextType.TRANSFORM_DEF
+CONTEXT_STYLE_DEF = ContextType.STYLE_DEF
+CONTEXT_DEFINE_DEF = ContextType.DEFINE_DEF
 
 
 
@@ -140,7 +147,7 @@ def get_indentation(line):
 
 
 def parse_file_contextually(lines_list):
-    print(f"DEBUG Parser: Entered parse_file_contextually with {len(lines_list) if lines_list is not None else 'None'} lines.") 
+    logger.debug(f"Entered parse_file_contextually with {len(lines_list) if lines_list is not None else 'None'} lines.")
     parsed_items = []
     
     
@@ -202,14 +209,25 @@ def parse_file_contextually(lines_list):
                          if match_narration:
                              original_parsed_text = match_narration.group(1).replace('\\"', '"')
                              original_type = "narration"
-                    parsed_items.append({
-                         "line_index": i, "type": "translate_potential_original",
-                         "text": original_parsed_text if original_type else content,
-                         "context": current_context, "context_data": current_context_data,
-                         "parsed_data": {"indent": indent_com, "original_type": original_type, "original_char_tag": original_char_tag,
-                                         "original_attributes": original_attributes, "original_tag_attribute": original_tag_attribute,
-                                         "original_full_comment_content": content},
-                         "has_breakpoint": has_breakpoint})
+                    
+                    parsed_data = {"indent": indent_com, "original_type": original_type, "original_char_tag": original_char_tag,
+                                    "original_attributes": original_attributes, "original_tag_attribute": original_tag_attribute,
+                                    "original_full_comment_content": content}
+                    
+                    parsed_items.append(ParsedItem(
+                        line_index=i,
+                        original_text=original_parsed_text if original_type else content,
+                        current_text=original_parsed_text if original_type else content,
+                        initial_text=original_parsed_text if original_type else content,
+                        type=ItemType.TRANSLATE_POTENTIAL_ORIGINAL,
+                        parsed_data=parsed_data,
+                        has_breakpoint=has_breakpoint,
+                        is_modified_session=False,
+                        context=current_context,
+                        # Context specific
+                        block_language=None, # Context data isn't language here? 
+                        original_line_index=None
+                    ))
             continue 
 
 
@@ -223,7 +241,7 @@ def parse_file_contextually(lines_list):
                 new_indent = line_indent; new_context = CONTEXT_PYTHON; new_context_data = None
                 context_stack.append((new_indent, new_context, new_context_data))
                 new_context_found = True
-                print(f"DEBUG Parser L{i+1}: Entered context PYTHON at indent {new_indent}")
+                logger.debug(f"L{i+1}: Entered context PYTHON at indent {new_indent}")
 
             
             if not new_context_found:
@@ -232,7 +250,7 @@ def parse_file_contextually(lines_list):
                     new_indent = line_indent; new_context = CONTEXT_SCREEN; new_context_data = {"name": match_screen.group(1)}
                     context_stack.append((new_indent, new_context, new_context_data))
                     new_context_found = True
-                    print(f"DEBUG Parser L{i+1}: Entered context SCREEN '{new_context_data['name']}' at indent {new_indent}")
+                    logger.debug(f"L{i+1}: Entered context SCREEN '{new_context_data['name']}' at indent {new_indent}")
 
             
             if not new_context_found:
@@ -245,7 +263,7 @@ def parse_file_contextually(lines_list):
                     new_context_data = {"language": lang, "identifier": identifier}
                     context_stack.append((new_indent, new_context, new_context_data))
                     new_context_found = True
-                    print(f"DEBUG Parser L{i+1}: Entered context {new_context} '{lang} {identifier}' at indent {new_indent}")
+                    logger.debug(f"L{i+1}: Entered context {new_context} '{lang} {identifier}' at indent {new_indent}")
 
             
             if not new_context_found and current_context != CONTEXT_SCREEN:
@@ -254,7 +272,7 @@ def parse_file_contextually(lines_list):
                     new_indent = line_indent; new_context = CONTEXT_LABEL; new_context_data = {"name": match_label.group(1)}
                     context_stack.append((new_indent, new_context, new_context_data))
                     new_context_found = True
-                    print(f"DEBUG Parser L{i+1}: Entered context LABEL '{new_context_data['name']}' at indent {new_indent}")
+                    logger.debug(f"L{i+1}: Entered context LABEL '{new_context_data['name']}' at indent {new_indent}")
 
             
             if not new_context_found:
@@ -263,7 +281,7 @@ def parse_file_contextually(lines_list):
                     new_indent = line_indent; new_context = CONTEXT_MENU; new_context_data = None
                     context_stack.append((new_indent, new_context, new_context_data))
                     new_context_found = True
-                    print(f"DEBUG Parser L{i+1}: Entered context MENU at indent {new_indent}")
+                    logger.debug(f"L{i+1}: Entered context MENU at indent {new_indent}")
 
             
             if not new_context_found:
@@ -272,7 +290,7 @@ def parse_file_contextually(lines_list):
                      new_indent = line_indent; new_context = CONTEXT_IMAGE_DEF; new_context_data = {"name_expr": match_image.group(1).strip()}
                      context_stack.append((new_indent, new_context, new_context_data))
                      new_context_found = True
-                     print(f"DEBUG Parser L{i+1}: Entered context IMAGE_DEF '{new_context_data['name_expr']}' at indent {new_indent}")
+                     logger.debug(f"L{i+1}: Entered context IMAGE_DEF '{new_context_data['name_expr']}' at indent {new_indent}")
 
             
             if not new_context_found:
@@ -281,7 +299,7 @@ def parse_file_contextually(lines_list):
                      new_indent = line_indent; new_context = CONTEXT_TRANSFORM_DEF; new_context_data = {"name": match_transform.group(1)}
                      context_stack.append((new_indent, new_context, new_context_data))
                      new_context_found = True
-                     print(f"DEBUG Parser L{i+1}: Entered context TRANSFORM_DEF '{new_context_data['name']}' at indent {new_indent}")
+                     logger.debug(f"L{i+1}: Entered context TRANSFORM_DEF '{new_context_data['name']}' at indent {new_indent}")
 
             
             if not new_context_found:
@@ -290,7 +308,7 @@ def parse_file_contextually(lines_list):
                      new_indent = line_indent; new_context = CONTEXT_STYLE_DEF; new_context_data = {"name": match_style.group(1)}
                      context_stack.append((new_indent, new_context, new_context_data))
                      new_context_found = True
-                     print(f"DEBUG Parser L{i+1}: Entered context STYLE_DEF '{new_context_data['name']}' at indent {new_indent}")
+                     logger.debug(f"L{i+1}: Entered context STYLE_DEF '{new_context_data['name']}' at indent {new_indent}")
 
             
             
@@ -304,7 +322,7 @@ def parse_file_contextually(lines_list):
                          new_indent = line_indent; new_context = CONTEXT_DEFINE_DEF; new_context_data = {"name": match_define.group(2)}
                          context_stack.append((new_indent, new_context, new_context_data))
                          new_context_found = True
-                         print(f"DEBUG Parser L{i+1}: Entered context DEFINE_DEF '{new_context_data['name']}' at indent {new_indent}")
+                         logger.debug(f"L{i+1}: Entered context DEFINE_DEF '{new_context_data['name']}' at indent {new_indent}")
                     
 
         
@@ -439,31 +457,52 @@ def parse_file_contextually(lines_list):
         if parsed_data and item_type and text is not None:
              if len(text.strip()) > 0 or config.ALLOW_EMPTY_STRINGS or item_type == CONTEXT_VARIABLE:
                  if 'indent' not in parsed_data:
-                      print(f"ERROR Parser L{i+1}: 'indent' key missing in parsed_data for type '{item_type}'. Line: '{line_to_parse.strip()}'")
+                      logger.error(f"L{i+1}: 'indent' key missing in parsed_data for type '{item_type}'. Line: '{line_to_parse.strip()}'")
                       continue
-                 item_to_add = {
-                     "line_index": i, "type": item_type, "character_tag": char_tag,
-                     "variable_name": variable_name, "text": text, "context": current_context,
-                     "context_data": current_context_data, "parsed_data": parsed_data,
-                     "has_breakpoint": has_breakpoint }
+                 
+                 item_to_add = ParsedItem(
+                     line_index=i,
+                     original_text=text,
+                     current_text=text,
+                     initial_text=text,
+                     type=ItemType(item_type) if isinstance(item_type, str) else item_type,
+                     character_tag=char_tag,
+                     variable_name=variable_name,
+                     parsed_data=parsed_data,
+                     has_breakpoint=has_breakpoint,
+                     is_modified_session=False,
+                     context=current_context,
+                     # Additional fields populated if needed (e.g. from context_data)
+                     block_language=current_context_data.get('language') if current_context_data and 'language' in current_context_data else None
+                 )
                  parsed_items.append(item_to_add)
              continue 
 
         
         
 
-    print(f"Контекстный парсер завершен. Найдено {len(parsed_items)} потенциальных элементов.")
+    logger.info(f"Parser completed. Found {len(parsed_items)} items.")
     return parsed_items
 
 
 
 def format_line_from_components(item_data, new_text):
-    if not item_data or 'parsed_data' not in item_data or 'type' not in item_data:
-         print("Ошибка: Отсутствуют данные 'parsed_data' или 'type' для форматирования строки.")
+    if not item_data:
+         logger.error("item_data is None for line formatting.")
          return None 
 
-    parsed_data = item_data['parsed_data']
-    item_type = item_data['type'] 
+    # Handle ParsedItem object or legacy dict
+    if isinstance(item_data, ParsedItem):
+        parsed_data = item_data.parsed_data
+        item_type = item_data.type
+    else:
+        if 'parsed_data' not in item_data or 'type' not in item_data:
+             raise FormatError("Missing 'parsed_data' or 'type' in dict for line formatting.", line_number=item_data.get('line_index'))
+        parsed_data = item_data['parsed_data']
+        item_type = item_data['type'] 
+
+    if not parsed_data:
+        raise FormatError("parsed_data is None or empty.", line_number=item_data.get('line_index')) 
     rule = parsed_data.get('reconstruction_rule', item_type)
     escaped_new_text = new_text.replace('"', '\\"') 
 
@@ -497,12 +536,15 @@ def format_line_from_components(item_data, new_text):
         keyword_part = f"{keyword} " if keyword else ""
         if uses_underscore: return f'{indent}{keyword_part}_("{escaped_new_text}"){suffix}'
         else: return f'{indent}{keyword_part}"{escaped_new_text}"{suffix}'
-    elif rule == "screen_property" or item_type == "screen_text_property":
+    elif rule == "screen_property" or item_type == ItemType.SCREEN_TEXT_PROPERTY:
         prefix_part = f"{prefix_content} " if prefix_content and prefix_content.strip() else prefix_content
         full_prefix = f"{indent}{prefix_part}"
         if uses_underscore: return f'{full_prefix}{keyword} _("{escaped_new_text}"){suffix}'
         else: return f'{full_prefix}{keyword} "{escaped_new_text}"{suffix}'
-    elif rule == "narration" or (item_type == "translate_translation" and not item_data.get('character_tag')):
+    elif rule == "narration" or (item_type == ItemType.TRANSLATE_TRANSLATION and not (
+        (isinstance(item_data, ParsedItem) and item_data.character_tag) or 
+        (isinstance(item_data, dict) and item_data.get('character_tag'))
+    )):
          return f'{indent}"{escaped_new_text}"{suffix}'
     elif rule == "translate_new" or item_type == "translate_new":
         return f'{indent}new "{escaped_new_text}"{suffix}'
@@ -513,9 +555,8 @@ def format_line_from_components(item_data, new_text):
          original_full_content = parsed_data.get('original_full_comment_content', item_data.get('text', ''))
          return f'{indent}# {original_full_content}'
     else:
-        print(f"Предупреждение: Неизвестный тип/правило '{item_type}'/'{rule}' при форматировании строки {item_data.get('line_index', '?') + 1}.")
-        return f'{indent}"{escaped_new_text}"{suffix}'
+        raise FormatError(f"Unknown type/rule '{item_type}'/'{rule}' when formatting line.", line_number=item_data.get('line_index'))
 
 
 
-print("renforge_parser.py (contextual) loaded") 
+logger.debug("renforge_parser.py loaded") 

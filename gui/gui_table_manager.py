@@ -2,6 +2,9 @@ import sys
 import os
 import re 
 
+from renforge_logger import get_logger
+logger = get_logger("gui.table_manager")
+
 try:
 
     from PyQt6.QtWidgets import (QTableWidget, QTableWidgetItem, QHeaderView,
@@ -9,12 +12,14 @@ try:
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QColor, QBrush 
 except ImportError:
-    print("CRITICAL ERROR: PyQt6 is required for table management but not found.")
+    logger.critical("PyQt6 is required for table management but not found.")
     sys.exit(1)
 
 import renforge_config as config
 import renforge_core as core 
 import renforge_parser as parser
+from renforge_models import TabData, ParsedItem
+from renforge_enums import ItemType
 
 def create_table_widget(main_window):
 
@@ -48,11 +53,11 @@ def populate_table(table_widget: QTableWidget, items_list: list, mode: str):
     table_widget.setRowCount(len(items_list))
 
     for i, item in enumerate(items_list):
-
-        line_idx = item.get('translated_line_index') if mode == 'translate' else item.get('line_index')
+        # item is ParsedItem
+        line_idx = item.line_index # Unified line index
         line_num_str = str(line_idx + 1) if line_idx is not None else "-"
-        item_type = item.get('type', '?')
-        variable_name = item.get('variable_name') 
+        item_type = item.type
+        variable_name = item.variable_name 
 
         display_tag = ""
         if item_type == parser.CONTEXT_VARIABLE:
@@ -60,19 +65,19 @@ def populate_table(table_widget: QTableWidget, items_list: list, mode: str):
             item_type_display = "var" 
         elif item_type == 'dialogue':
             if mode == 'translate':
-                display_tag = item.get('character_trans', item.get('character_tag', ''))
+                display_tag = item.character_trans or item.character_tag or ''
             else: 
-                display_tag = item.get('character_tag', '')
+                display_tag = item.character_tag or ''
             item_type_display = item_type 
         else: 
-            display_tag = item.get('character_tag', '') 
+            display_tag = item.character_tag or ''
             item_type_display = item_type 
 
-        original_text = item.get('original_text', '')
-        edited_text = item.get('translated_text', '') if mode == 'translate' else item.get('current_text', '')
+        original_text = item.original_text or ''
+        edited_text = item.current_text or ''
 
-        modified_status = "*" if item.get('is_modified_session', False) else ""
-        breakpoint_status = "B" if item.get('has_breakpoint', False) else ""
+        modified_status = "*" if item.is_modified_session else ""
+        breakpoint_status = "B" if item.has_breakpoint else ""
 
         item_line = QTableWidgetItem(line_num_str)
         item_type_cell = QTableWidgetItem(item_type_display) 
@@ -178,36 +183,36 @@ def handle_item_changed(main_window, item: QTableWidgetItem):
 
     current_file_data = main_window._get_current_file_data()
     if not current_file_data:
-        print("Error: handle_item_changed - No current file data found!")
+        logger.error("handle_item_changed - No current file data found!")
         return
 
-    current_items = current_file_data.get('items')
-    current_mode = current_file_data.get('mode')
-    current_file_lines = current_file_data.get('lines') 
+    current_items = current_file_data.items
+    current_mode = current_file_data.mode
+    current_file_lines = current_file_data.lines 
 
     if not current_items or not current_mode or not (0 <= row < len(current_items)):
-        print(f"Warning: Invalid state or index in handle_item_changed (row: {row})")
+        logger.warning(f"Invalid state or index in handle_item_changed (row: {row})")
         return
 
     item_data = current_items[row]
     new_text = item.text()
 
-    text_key = 'translated_text' if current_mode == "translate" else 'current_text'
-    current_text_in_data = item_data.get(text_key, '')
+    # text_key logic removed
+    current_text_in_data = item_data.current_text
 
-    if 'initial_text' not in item_data:
-         item_data['initial_text'] = current_text_in_data
+    if item_data.initial_text is None:
+         item_data.initial_text = current_text_in_data
 
     if new_text != current_text_in_data:
 
-        item_data[text_key] = new_text
-        item_data['is_modified_session'] = True
+        item_data.current_text = new_text
+        item_data.is_modified_session = True
 
         update_line = False
         if current_mode == "translate":
-            line_idx = item_data.get('translated_line_index')
+            line_idx = item_data.line_index
 
-            parsed_data_for_formatting = item_data.get('parsed_data')
+            parsed_data_for_formatting = item_data.parsed_data
             if line_idx is not None and parsed_data_for_formatting is not None and current_file_lines and 0 <= line_idx < len(current_file_lines):
 
                 new_line = parser.format_line_from_components(item_data, new_text)
@@ -219,7 +224,7 @@ def handle_item_changed(main_window, item: QTableWidgetItem):
                     main_window.statusBar().showMessage(f"Error formatting line {line_idx+1} during manual input!", 5000)
 
             else:
-                 print(f"Warning: Could not update line for item {row} in translate mode (missing index or parsed_data).")
+                 logger.warning(f"Could not update line for item {row} in translate mode (missing index or parsed_data).")
 
         update_table_row_style(sender_table, row, item_data)
 
@@ -229,8 +234,8 @@ def find_text_in_item(item_data: dict, search_text: str, mode: str, use_regex: b
 
     if not search_text:
         return False
-    text_key = 'translated_text' if mode == "translate" else 'current_text'
-    text_to_search_in = item_data.get(text_key, '')
+    # text_key logic removed
+    text_to_search_in = item_data.current_text or ''
 
     if use_regex:
         try:
@@ -252,8 +257,8 @@ def update_table_row_style(table_widget: QTableWidget, row_index: int, item_data
     if not table_widget or not (0 <= row_index < table_widget.rowCount()):
         return 
 
-    has_breakpoint = item_data.get('has_breakpoint', False)
-    is_modified = item_data.get('is_modified_session', False)
+    has_breakpoint = item_data.has_breakpoint
+    is_modified = item_data.is_modified_session
 
     mod_item = table_widget.item(row_index, 5) 
     if mod_item: mod_item.setText("*" if is_modified else "")
@@ -305,38 +310,38 @@ def revert_single_item_logic(main_window, item_index: int) -> bool:
     current_file_data = main_window._get_current_file_data()
     if not current_file_data: return False
 
-    current_items = current_file_data.get('items')
-    current_file_lines = current_file_data.get('lines')
-    current_mode = current_file_data.get('mode')
-    table_widget = current_file_data.get('table_widget') 
+    current_items = current_file_data.items
+    current_file_lines = current_file_data.lines
+    current_mode = current_file_data.mode
+    table_widget = getattr(current_file_data, 'table_widget', None) 
 
     if not current_items or not current_mode or not table_widget or not (0 <= item_index < len(current_items)):
-        print(f"Error: revert_single_item_logic - Invalid data for index {item_index}")
+        logger.error(f"revert_single_item_logic - Invalid data for index {item_index}")
         return False 
 
     item = current_items[item_index]
 
-    if not item.get('is_modified_session', False):
+    if not item.is_modified_session:
         return False
 
-    initial_text = item.get('initial_text')
+    initial_text = item.initial_text
     if initial_text is None:
 
-         initial_text = item.get('original_text', '')
-         print(f"Warning: No 'initial_text' found for item {item_index}, reverting to 'original_text'.")
+         initial_text = item.original_text or ''
+         logger.warning(f"No 'initial_text' found for item {item_index}, reverting to 'original_text'.")
 
-    text_key = 'translated_text' if current_mode == "translate" else 'current_text'
-    current_text = item.get(text_key, '')
+    # text_key logic removed
+    current_text = item.current_text or ''
 
     reverted = False
     if current_text != initial_text:
 
-        item[text_key] = initial_text
+        item.current_text = initial_text
 
         if current_mode == "translate":
-            line_idx = item.get('translated_line_index')
+            line_idx = item.line_index
 
-            parsed_data_for_formatting = item.get('parsed_data')
+            parsed_data_for_formatting = item.parsed_data
             if line_idx is not None and parsed_data_for_formatting is not None and current_file_lines and 0 <= line_idx < len(current_file_lines):
 
                 new_line = parser.format_line_from_components(item, initial_text)
@@ -347,12 +352,12 @@ def revert_single_item_logic(main_window, item_index: int) -> bool:
                 else:
                     main_window.statusBar().showMessage(f"Error formatting line {line_idx+1} on revert", 5000)
 
-                    item[text_key] = current_text
+                    item.current_text = current_text
                     return False 
             else:
 
                 reverted = True
-                print(f"Warning: Could not update line {line_idx} on revert for item {item_index}.")
+                logger.warning(f"Could not update line {line_idx} on revert for item {item_index}.")
         else: 
             reverted = True
 
@@ -376,8 +381,8 @@ def revert_single_item_menu(main_window):
 
             current_items = main_window._get_current_translatable_items()
             current_data = main_window._get_current_file_data()
-            any_text_modified = any(it.get('is_modified_session', False) for it in current_items) if current_items else False
-            breakpoint_modified = current_data.get('breakpoint_modified', False) if current_data else False
+            any_text_modified = any(it.is_modified_session for it in current_items) if current_items else False
+            breakpoint_modified = current_data.breakpoint_modified if current_data else False
             main_window._set_current_tab_modified(any_text_modified or breakpoint_modified)
         else:
             main_window.statusBar().showMessage(f"No changes to revert for item {current_idx + 1}.", 3000)
@@ -408,8 +413,8 @@ def revert_selected_items(main_window):
 
         current_items = main_window._get_current_translatable_items()
         current_data = main_window._get_current_file_data()
-        any_text_modified = any(it.get('is_modified_session', False) for it in current_items) if current_items else False
-        breakpoint_modified = current_data.get('breakpoint_modified', False) if current_data else False
+        any_text_modified = any(it.is_modified_session for it in current_items) if current_items else False
+        breakpoint_modified = current_data.breakpoint_modified if current_data else False
         main_window._set_current_tab_modified(any_text_modified or breakpoint_modified)
     else:
         main_window.statusBar().showMessage("No changes to revert in selected items.", 3000)
@@ -423,16 +428,16 @@ def revert_all_items(main_window):
         main_window.statusBar().showMessage("Нет активной вкладки для отмены.", 3000)
         return
 
-    current_items = current_file_data.get('items')
+    current_items = current_file_data.items
     if not current_items: return
 
-    modified_indices = [i for i, item in enumerate(current_items) if item.get('is_modified_session', False)]
+    modified_indices = [i for i, item in enumerate(current_items) if item.is_modified_session]
 
     if not modified_indices:
         main_window.statusBar().showMessage("No text changes to revert.", 3000)
         return
 
-    file_name = os.path.basename(current_file_data.get('output_path', main_window.current_file_path or "?"))
+    file_name = os.path.basename(current_file_data.output_path or main_window.current_file_path or "?")
     reply = QMessageBox.question(main_window, "Confirm Revert",
                                  f"Revert all {len(modified_indices)} text changes in file {file_name}?\n"
                                  "(Marker changes will remain)",
@@ -448,7 +453,7 @@ def revert_all_items(main_window):
         if reverted_count > 0:
             main_window.statusBar().showMessage(f"All {reverted_count} text changes reverted.", 4000)
 
-            breakpoint_modified = current_file_data.get('breakpoint_modified', False)
+            breakpoint_modified = current_file_data.breakpoint_modified
             main_window._set_current_tab_modified(breakpoint_modified)
         else:
 

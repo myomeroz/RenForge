@@ -1,10 +1,17 @@
 import re
 import os
 
+from renforge_logger import get_logger
+logger = get_logger("core")
+
 import renforge_config as config
 from locales import tr
 
 import renforge_parser as parser
+from renforge_models import ParsedItem
+from renforge_enums import ItemType, ContextType
+from renforge_exceptions import FileOperationError, SaveError, ModeDetectionError
+from dataclasses import replace
 
 def prepare_lines_for_saving(current_file_lines, current_breakpoints):
 
@@ -26,11 +33,11 @@ def prepare_lines_for_saving(current_file_lines, current_breakpoints):
 
 def detect_file_mode(file_path):
 
-    print(f"--- [detect_file_mode] Detecting mode for: {file_path} ---")
+    logger.debug(f"[detect_file_mode] Detecting mode for: {file_path}")
 
     loaded_file_lines, _ = load_and_parse_base(file_path)
     if loaded_file_lines is None:
-        print(f"--- [detect_file_mode] Warning: Could not load file. Defaulting to 'direct'. ---")
+        logger.warning(f"[detect_file_mode] Could not load file. Defaulting to 'direct'.")
         return "direct" 
 
     has_translate_blocks = False
@@ -39,7 +46,7 @@ def detect_file_mode(file_path):
     screen_def_regex = parser.RE_SCREEN_START
     translate_block_regex = parser.RE_TRANSLATE_START
 
-    print(f"--- [detect_file_mode] Scanning for translate blocks and screen definitions...")
+    logger.debug(f"[detect_file_mode] Scanning for translate blocks and screen definitions...")
     for line in loaded_file_lines:
         stripped_line = line.lstrip()
 
@@ -52,19 +59,17 @@ def detect_file_mode(file_path):
         if screen_def_regex.match(line):
             has_screen_definitions = True
 
-    print(f"--- [detect_file_mode] Analysis results:")
-    print(f"    Has 'translate' blocks: {has_translate_blocks}")
-    print(f"    Has 'screen' definitions: {has_screen_definitions}")
+    logger.debug(f"[detect_file_mode] Analysis results: translate={has_translate_blocks}, screen={has_screen_definitions}")
 
     if has_screen_definitions:
-        print(f"--- [detect_file_mode] Decision: 'direct' (Screen definitions found) ---")
+        logger.debug(f"[detect_file_mode] Decision: 'direct' (Screen definitions found)")
         return "direct"
 
     if has_translate_blocks:
-        print(f"--- [detect_file_mode] Decision: 'translate' (Translate blocks found, no screen definitions) ---")
+        logger.debug(f"[detect_file_mode] Decision: 'translate' (Translate blocks found)")
         return "translate"
 
-    print(f"--- [detect_file_mode] Decision: 'direct' (Default - No screen or translate blocks found) ---")
+    logger.debug(f"[detect_file_mode] Decision: 'direct' (Default)")
     return "direct"
 
 def load_and_parse_base(input_path):
@@ -77,10 +82,10 @@ def load_and_parse_base(input_path):
 
         raw_lines = input_path_obj.read_text(encoding='utf-8-sig').splitlines()
     except FileNotFoundError as e:
-        print(tr("core_error", error=e))
+        logger.error(tr("core_error", error=e))
         return None, None 
     except Exception as e:
-        print(tr("core_read_error", path=input_path, error=e))
+        logger.error(tr("core_read_error", path=input_path, error=e))
         return None, None 
 
     loaded_file_lines = []
@@ -97,7 +102,7 @@ def load_and_parse_base(input_path):
         else:
             loaded_file_lines.append(raw_line) 
 
-    print(tr("core_file_loaded", path=input_path, lines=len(loaded_file_lines), breakpoints=len(loaded_breakpoints)))
+    logger.debug(tr("core_file_loaded", path=input_path, lines=len(loaded_file_lines), breakpoints=len(loaded_breakpoints)))
     return loaded_file_lines, loaded_breakpoints
 
 def load_and_parse_translate_file(input_path):
@@ -106,53 +111,48 @@ def load_and_parse_translate_file(input_path):
     if loaded_file_lines is None:
         return [], [], set(), None 
 
-    print(tr("core_parser_start"))
+    logger.debug(tr("core_parser_start"))
 
     all_parsed_items = parser.parse_file_contextually(loaded_file_lines)
 
-    print(tr("core_parser_process"))
+    logger.debug(tr("core_parser_process"))
     parsed_translatable_items = []
     detected_language = None
     last_old_item = None 
     last_original_comment_item = None 
 
     for item in all_parsed_items:
-        item_index = item['line_index']
-        item_type = item['type']
-        item_context = item['context']
-        item_context_data = item.get('context_data', {})
-        item_lang = item_context_data.get('language') if item_context_data else None
+        item_index = item.line_index
+        item_type = item.type
+        item_context = item.context
+        item_lang = item.block_language
 
         if detected_language is None and item_lang:
             detected_language = item_lang
-            print(tr("core_lang_found", lang=detected_language)) 
+            logger.info(tr("core_lang_found", lang=detected_language)) 
         elif detected_language and item_lang and detected_language != item_lang:
-            print(tr("core_lang_warning", lang=item_lang, detected=detected_language, line=item_index+1))
+            logger.warning(tr("core_lang_warning", lang=item_lang, detected=detected_language, line=item_index+1))
 
-        if item_context == parser.CONTEXT_TRANSLATE_STRINGS:
-            if item_type == "translate_old":
+        if item_context == ContextType.TRANSLATE_STRINGS:
+            if item_type == ItemType.TRANSLATE_OLD:
                 last_old_item = item 
                 last_original_comment_item = None 
-            elif item_type == "translate_new" and last_old_item:
+            elif item_type == ItemType.TRANSLATE_NEW and last_old_item:
 
-                new_text = item['text']
-                final_item = {
-                    "original_line_index": last_old_item['line_index'],
-                    "translated_line_index": item_index,
-                    "original_text": last_old_item['text'],
-                    "translated_text": new_text,
-                    "initial_text": new_text,
-                    "is_modified_session": False,
-                    "block_language": last_old_item.get('context_data', {}).get('language'),
-                    "character_trans": None, 
-                    "character_tag": None,   
-                    "type": "string", 
-                    "parsed_data": item['parsed_data'], 
-                    "has_breakpoint": item['has_breakpoint'] 
-                }
-
-                if 'reconstruction_rule' not in final_item['parsed_data']:
-                    final_item['parsed_data']['reconstruction_rule'] = 'translate_new'
+                new_text = item.current_text
+                final_item = replace(item,
+                    original_line_index=last_old_item.line_index,
+                    original_text=last_old_item.original_text,
+                    parsed_data=item.parsed_data,
+                    block_language=last_old_item.block_language,
+                    type=ItemType("string"),
+                    is_modified_session=False,
+                    # current_text is already in item
+                    initial_text=new_text
+                )
+                
+                if 'reconstruction_rule' not in final_item.parsed_data:
+                    final_item.parsed_data['reconstruction_rule'] = 'translate_new'
 
                 parsed_translatable_items.append(final_item)
                 last_old_item = None 
@@ -160,8 +160,8 @@ def load_and_parse_translate_file(input_path):
 
                 last_old_item = None
 
-        elif item_context == parser.CONTEXT_TRANSLATE:
-            if item_type == "translate_potential_original":
+        elif item_context == ContextType.TRANSLATE:
+            if item_type == ItemType.TRANSLATE_POTENTIAL_ORIGINAL:
 
                 last_original_comment_item = item
                 last_old_item = None 
@@ -182,49 +182,49 @@ def load_and_parse_translate_file(input_path):
 
                     if original_type == translation_base_type:
 
-                        final_item = {
-                            "original_line_index": last_original_comment_item['line_index'],
-                            "translated_line_index": item_index,
-                            "original_text": original_text_content, 
-                            "translated_text": translated_text, 
-                            "initial_text": translated_text,
-                            "is_modified_session": False,
-                            "block_language": item_lang,
-                            "character_trans": translation_char_tag, 
-                            "character_tag": original_char_tag,      
-                            "type": original_type,                   
-                            "parsed_data": item['parsed_data'],      
-                            "has_breakpoint": item['has_breakpoint'] 
-                        }
+                        final_item = ParsedItem(
+                            line_index=item_index,
+                            original_line_index=last_original_comment_item['line_index'],
+                            original_text=original_text_content,
+                            current_text=translated_text,
+                            initial_text=translated_text,
+                            type=ItemType(original_type),  # Ensure enum conversion
+                            parsed_data=item['parsed_data'],
+                            has_breakpoint=item['has_breakpoint'],
+                            
+                            is_modified_session=False,
+                            block_language=item_lang,
+                            character_trans=translation_char_tag,
+                            character_tag=original_char_tag
+                        )
 
                         rec_rule = 'standard' if translation_char_tag else 'narration'
-                        final_item['parsed_data']['reconstruction_rule'] = rec_rule
+                        final_item.parsed_data['reconstruction_rule'] = rec_rule
 
                         parsed_translatable_items.append(final_item)
 
                         last_original_comment_item = None 
                     else:
 
-                        print(tr("core_type_mismatch_warning", line=item_index+1, orig_type=original_type, orig_tag=original_char_tag, trans_type=translation_base_type, trans_tag=translation_char_tag))
+                        logger.warning(tr("core_type_mismatch_warning", line=item_index+1, orig_type=original_type, orig_tag=original_char_tag, trans_type=translation_base_type, trans_tag=translation_char_tag))
                         last_original_comment_item = None 
                 else:
 
-                    print(tr("core_type_unknown_warning", line=item_index+1, comment=original_parsed_data.get('original_full_comment_content', ''), text=translated_text[:30]))
+                    logger.warning(tr("core_type_unknown_warning", line=item_index+1, comment=original_parsed_data.get('original_full_comment_content', ''), text=translated_text[:30]))
                     last_original_comment_item = None 
             else:
-
-                if item_type != "translate_potential_original": 
+                 # Logic for clearing if mismatch sequence
+                if item_type != ItemType.TRANSLATE_POTENTIAL_ORIGINAL: 
                      last_original_comment_item = None
 
         else:
-
-            if item_context != parser.CONTEXT_TRANSLATE and item_context != parser.CONTEXT_TRANSLATE_STRINGS:
+            if item_context != ContextType.TRANSLATE and item_context != ContextType.TRANSLATE_STRINGS:
                 last_old_item = None
                 last_original_comment_item = None
 
-    print(tr("core_process_complete", count=len(parsed_translatable_items)))
+    logger.debug(tr("core_process_complete", count=len(parsed_translatable_items)))
     if not parsed_translatable_items and detected_language:
-        print(tr("core_no_pairs_warning"))
+        logger.warning(tr("core_no_pairs_warning"))
 
     return parsed_translatable_items, loaded_file_lines, loaded_breakpoints, detected_language
 
@@ -232,33 +232,33 @@ def save_translate_file(output_path, current_file_lines, current_breakpoints):
 
     lines_to_save = prepare_lines_for_saving(current_file_lines, current_breakpoints)
     try:
-
         output_path_obj = config.Path(output_path)
         output_path_obj.write_text('\n'.join(lines_to_save) + '\n', encoding='utf-8')
-        print(tr("core_save_success", path=output_path))
+        logger.info(tr("core_save_success", path=output_path))
         return True 
+    except (IOError, OSError) as e:
+        raise SaveError(tr("core_save_error", path=output_path, error=str(e)), file_path=output_path) from e
     except Exception as e:
-        print(tr("core_save_error", path=output_path, error=e))
-        return False 
+        raise SaveError(f"Unexpected error saving file: {e}", file_path=output_path) from e 
 
 def get_context_for_translate_item(item_index, items_list, lines_list):
 
     if not items_list or not (0 <= item_index < len(items_list)):
         return [] 
 
-    target_item = items_list[item_index]
+    target_item: ParsedItem = items_list[item_index]
 
-    target_line_index = target_item['translated_line_index']
+    target_line_index = target_item.line_index
 
-    original_line_index = target_item['original_line_index']
+    original_line_index = target_item.original_line_index if target_item.original_line_index is not None else -1
 
     start_line_idx = max(0, target_line_index - config.CONTEXT_LINES)
     end_line_idx = min(len(lines_list), target_line_index + config.CONTEXT_LINES + 1)
 
     context_lines_info = []
 
-    item_lookup_trans = {item['translated_line_index']: item for item in items_list}
-    item_lookup_orig = {item['original_line_index']: item for item in items_list}
+    item_lookup_trans = {item.line_index: item for item in items_list}
+    item_lookup_orig = {item.original_line_index: item for item in items_list if item.original_line_index is not None}
 
     for i in range(start_line_idx, end_line_idx):
 
@@ -282,19 +282,19 @@ def get_context_for_translate_item(item_index, items_list, lines_list):
 
         if i in item_lookup_trans:
              item_data = item_lookup_trans[i]
-             info["original"] = item_data['original_text']
-             info["translated"] = item_data['translated_text']
+             info["original"] = item_data.original_text
+             info["translated"] = item_data.current_text
              info["is_translation_line"] = True
 
-             char_tag = item_data.get('character_trans')
+             char_tag = item_data.character_trans
 
         elif i in item_lookup_orig:
              item_data = item_lookup_orig[i]
-             info["original"] = item_data['original_text']
+             info["original"] = item_data.original_text
 
              info["is_original_comment"] = True
 
-             char_tag = item_data.get('character_tag')
+             char_tag = item_data.character_tag
 
         else:
 
@@ -318,56 +318,47 @@ def load_and_parse_direct_file(input_path):
     if loaded_file_lines is None:
         return [], [], set()
 
-    print(f"DEBUG Core: Calling parser.parse_file_contextually for Direct Mode on {input_path}") 
+    logger.debug(f"Calling parser.parse_file_contextually for Direct Mode on {input_path}") 
     all_parsed_items = parser.parse_file_contextually(loaded_file_lines)
-    print(f"DEBUG Core: Parser finished for Direct Mode. Found {len(all_parsed_items) if all_parsed_items is not None else 'None'} raw items.") 
+    logger.debug(f"Parser finished for Direct Mode. Found {len(all_parsed_items) if all_parsed_items is not None else 'None'} raw items.") 
 
-    print(tr("core_filter_direct"))
+    logger.debug(tr("core_filter_direct"))
     parsed_direct_items = []
 
     editable_types_direct = {
-        "dialogue",
-        "narration",
-        "choice",
-        "screen_button",
-        "screen_label",
-        "screen_text_statement",
-        "screen_text_property",
-        "variable" 
+        ItemType.DIALOGUE,
+        ItemType.NARRATION,
+        ItemType.CHOICE,
+        ItemType.SCREEN_BUTTON,
+        ItemType.SCREEN_LABEL,
+        ItemType.SCREEN_TEXT_STATEMENT,
+        ItemType.SCREEN_TEXT_PROPERTY,
+        ItemType.VARIABLE 
     }
 
     for item in all_parsed_items:
 
-        if item['context'] in [parser.CONTEXT_TRANSLATE, parser.CONTEXT_TRANSLATE_STRINGS]:
-             if item['type'] == 'translate_potential_original': continue
+        if item.context in [ContextType.TRANSLATE, ContextType.TRANSLATE_STRINGS]:
+             if item.type == ItemType.TRANSLATE_POTENTIAL_ORIGINAL: continue
              continue
 
-        if item['type'] in editable_types_direct:
-            text = item['text']
-            direct_item = {
-                "line_index": item['line_index'],
-                "original_text": text,
-                "current_text": text,
-                "initial_text": text,
-                "is_modified_session": False,
-                "character_tag": item.get('character_tag'), 
-                "variable_name": item.get('variable_name'), 
-                "type": item['type'],
-                "parsed_data": item['parsed_data'],
-                "has_breakpoint": item['has_breakpoint']
-            }
-            parsed_direct_items.append(direct_item)
+        if item.type in editable_types_direct:
+            text = item.original_text
+            
+            # direct_item logic removed, we use the parsed item directly.
+            parsed_direct_items.append(item)
+            continue
 
-    print(tr("core_direct_found", count=len(parsed_direct_items)))
+    logger.debug(tr("core_direct_found", count=len(parsed_direct_items)))
     if not parsed_direct_items:
-        print(tr("core_direct_none"))
+        logger.warning(tr("core_direct_none"))
     return parsed_direct_items, loaded_file_lines, loaded_breakpoints
 
 def save_direct_file(output_path, current_items_list, current_file_lines, current_breakpoints):
 
-    print(tr("core_rebuild_saving", path=output_path))
+    logger.debug(tr("core_rebuild_saving", path=output_path))
 
-    items_by_index = {item['line_index']: item for item in current_items_list}
+    items_by_index = {item.line_index: item for item in current_items_list}
     new_file_lines_temp = [] 
     saved_count = 0 
 
@@ -376,15 +367,42 @@ def save_direct_file(output_path, current_items_list, current_file_lines, curren
         if i in items_by_index:
             item = items_by_index[i]
 
-            new_line = parser.format_line_from_components(item, item['current_text'])
+            # Reconstruct the line using the parser's helper, but adapted for ParsedItem if needed
+            # The parser expects a dict-like structure or specific keys. 
+            # It seems format_line_from_components takes (item_dict, new_text).
+            # We might need to adjust parser or convert item back to dict for the parser function?
+            # Or better, just pass the parsed_data which format_line_from_components often needs.
+            # Let's check parser.format_line_from_components usage.
+            
+            # Since parser expects specific keys usually found in the raw parser output,
+            # and ParsedItem stores that in 'parsed_data' + type/text fields.
+            
+            # Temporary bridge: The parser function likely expects the structure it produced.
+            # Our ParsedItem stores that in 'parsed_data' but we modified 'text' in the item.
+            
+            # Actually, `parser.format_line_from_components(item_data, new_text)`
+            # In existing code `item` was the direct_item dict which mapped almost 1:1 to parser output.
+            
+            # We need to construct a compatible dict or modify parser.
+            # Let's pass the item.parsed_data augmented with type.
+            
+            # Wait, `renforge_parser.py` implementation of `format_line_from_components`
+            # checks `item_data['type']`. `parsed_data` usually doesn't have 'type'.
+            
+            # Let's create a proxy dict for the parser function.
+            parser_proxy_item = item.parsed_data.copy()
+            parser_proxy_item['type'] = item.type
+            if item.character_tag: parser_proxy_item['character_tag'] = item.character_tag
+            
+            new_line = parser.format_line_from_components(parser_proxy_item, item.current_text)
             if new_line is not None:
                 new_file_lines_temp.append(new_line)
 
-                if item['current_text'] != item['original_text']:
+                if item.current_text != item.original_text:
                     saved_count += 1
             else:
 
-                print(tr("core_reformat_warning", line=i+1, content=original_line_in_memory))
+                logger.warning(tr("core_reformat_warning", line=i+1, content=original_line_in_memory))
                 new_file_lines_temp.append(original_line_in_memory)
         else:
 
@@ -393,14 +411,20 @@ def save_direct_file(output_path, current_items_list, current_file_lines, curren
     lines_to_save = prepare_lines_for_saving(new_file_lines_temp, current_breakpoints)
 
     try:
-
         output_path_obj = config.Path(output_path)
         output_path_obj.write_text('\n'.join(lines_to_save) + '\n', encoding='utf-8')
-        print(tr("core_save_success_count", count=saved_count))
+        logger.info(tr("core_save_success_count", count=saved_count))
+        # return True - No need to return True if we trust exceptions, but for now let's keep consistent if caller expects it, 
+        # or better: verify if caller checks return value. 
+        # Actually standard practice with exceptions is void return on success usually.
+        # But let's return True to be safe with existing checks while we transition.
         return True 
+    except (IOError, OSError) as e:
+        # Wrap IO errors in our custom SaveError
+        raise SaveError(tr("core_save_error", path=output_path, error=str(e)), file_path=output_path) from e
     except Exception as e:
-        print(tr("core_save_error", path=output_path, error=e))
-        return False 
+         # Catch-all for other unexpected errors during save preparation
+         raise SaveError(f"Unexpected error saving file: {e}", file_path=output_path) from e 
 
 def get_context_for_direct_item(item_index, items_list, lines_list):
 
@@ -503,7 +527,7 @@ def get_context_for_item(item_index, items_list, lines_list, mode):
     elif mode == "direct":
         return get_context_for_direct_item(item_index, items_list, lines_list)
     else:
-        print(f"Warning: Unknown mode '{mode}' in get_context_for_item. Returning empty context.")
+        logger.warning(f"Unknown mode '{mode}' in get_context_for_item. Returning empty context.")
         return []
 
-print("renforge_core.py loaded") 
+logger.debug("renforge_core.py loaded") 

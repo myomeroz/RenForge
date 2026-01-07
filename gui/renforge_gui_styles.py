@@ -1,4 +1,6 @@
 import renforge_config as config
+from renforge_logger import get_logger
+_logger = get_logger("gui.styles")
 
 pics = ["pics/branch-expand.svg", "pics/branch-collapse.svg"]
 
@@ -602,4 +604,4 @@ QTreeView::branch:open:has-children:has-siblings {{
 
 DARK_STYLE_SHEET = MODERN_STYLE_SHEET
 
-print("gui/renforge_gui_styles.py updated with Modern Style")
+_logger.debug("gui/renforge_gui_styles.py loaded")

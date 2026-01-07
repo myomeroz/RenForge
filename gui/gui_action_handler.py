@@ -3,13 +3,16 @@ import re
 import sys
 import time
 
+from renforge_logger import get_logger
+logger = get_logger("gui.action_handler")
+
 try:
 
     from PyQt6.QtWidgets import (QMessageBox, QProgressDialog, QDialog,
                                  QAbstractItemView, QApplication)
     from PyQt6.QtCore import (Qt, QObject, pyqtSignal, QRunnable, QThreadPool, pyqtSlot)
 except ImportError:
-    print("CRITICAL ERROR: PyQt6 is required for action handling but not found.")
+    logger.critical("PyQt6 is required for action handling but not found.")
     sys.exit(1)
 
 import renforge_config as config
@@ -22,11 +25,13 @@ from gui.renforge_gui_dialog import (AIEditDialog, GoogleTranslateDialog, Insert
 import gui.gui_settings_manager as settings_manager
 import gui.gui_table_manager as table_manager 
 from locales import tr 
+from renforge_models import TabData, ParsedItem
+from dataclasses import replace, asdict 
 
 class WorkerSignals(QObject):
 
     progress = pyqtSignal(int)
-    item_updated = pyqtSignal(int, str, dict) 
+    item_updated = pyqtSignal(int, str, object) # Updated to pass ParsedItem object (or dict if converted)
     error_occurred = pyqtSignal(str)
     variables_warning = pyqtSignal(str)
     finished = pyqtSignal(dict)
@@ -47,12 +52,12 @@ class BatchTranslateWorker(QRunnable):
         self.translator = None 
 
     def cancel(self):
-        print("--- BatchTranslateWorker: Cancel requested ---")
+        logger.debug("BatchTranslateWorker: Cancel requested")
         self._is_canceled = True
 
     @pyqtSlot()
     def run(self):
-        print("--- BatchTranslateWorker: Run started ---")
+        logger.debug("BatchTranslateWorker: Run started")
         processed_count = 0
         success_count = 0
         error_count = 0
@@ -89,57 +94,52 @@ class BatchTranslateWorker(QRunnable):
         total_items = len(self.selected_indices)
         for i, item_index in enumerate(self.selected_indices):
             if self._is_canceled:
-                print("--- BatchTranslateWorker: Canceled during loop ---")
+                logger.debug("BatchTranslateWorker: Canceled during loop")
                 errors_details.append(f"- {tr('batch_task_canceled')}")
                 break 
 
             self.signals.progress.emit(i)
 
             if not (0 <= item_index < len(self.items_data_copy)):
-                print(f"Warning: Skipping invalid index {item_index} during batch translate (Worker).")
+                logger.warning(f"Skipping invalid index {item_index} during batch translate (Worker).")
                 err_detail = f"- {tr('batch_skipped_invalid_index', index=item_index+1)}"
                 errors_details.append(err_detail)
                 error_count += 1
                 continue
 
-            item_data = self.items_data_copy[item_index]
+            item_data: ParsedItem = self.items_data_copy[item_index]
             text_to_translate = ""
             current_text_for_vars = ""
-            text_key_to_update = ""
-            parsed_data_key = ""
+            # text_key_to_update logic removed, we use unified fields
             line_index_to_update = -1
 
             if self.mode == 'translate':
-                text_to_translate = item_data.get('original_text', '')
-                current_text_for_vars = item_data.get('translated_text', '')
-                text_key_to_update = 'translated_text'
-                parsed_data_key = 'parsed_translation_data'
-                line_index_to_update = item_data.get('translated_line_index')
+                text_to_translate = item_data.original_text or ''
+                current_text_for_vars = item_data.current_text or ''
+                line_index_to_update = item_data.line_index
             elif self.mode == 'direct':
-                text_to_translate = item_data.get('original_text', '')
-                current_text_for_vars = item_data.get('current_text', '')
-                text_key_to_update = 'current_text'
-                parsed_data_key = 'parsed_data'
-                line_index_to_update = item_data.get('line_index')
+                text_to_translate = item_data.original_text or ''
+                current_text_for_vars = item_data.current_text or ''
+                line_index_to_update = item_data.line_index
 
-            if not text_to_translate or not text_key_to_update:
+            if not text_to_translate:
                 processed_count += 1 
                 continue
 
-            if 'initial_text' not in item_data:
-                 item_data['initial_text'] = current_text_for_vars 
+            if item_data.initial_text is None:
+                 item_data.initial_text = current_text_for_vars 
 
             try:
 
                 if self._is_canceled:
-                     print("--- BatchTranslateWorker: Canceled before translate call ---")
+                     logger.debug("BatchTranslateWorker: Canceled before translate call")
                      errors_details.append(f"- {tr('batch_task_canceled')}")
                      break
 
                 translated_text = self.translator.translate(text_to_translate)
 
                 if self._is_canceled:
-                    print("--- BatchTranslateWorker: Canceled after translate call ---")
+                    logger.debug("BatchTranslateWorker: Canceled after translate call")
                     errors_details.append(f"- {tr('batch_task_canceled')}")
                     break
 
@@ -156,11 +156,11 @@ class BatchTranslateWorker(QRunnable):
                         variable_warnings_details.append(var_warn_detail)
                         self.signals.variables_warning.emit(var_warn_detail) 
 
-                    item_data[text_key_to_update] = translated_text
-                    item_data['is_modified_session'] = True
+                    item_data.current_text = translated_text
+                    item_data.is_modified_session = True
                     made_changes = True
 
-                    vars_source_text = item_data.get('original_text', '') if self.mode == 'translate' else current_text_for_vars
+                    vars_source_text = item_data.original_text if self.mode == 'translate' else current_text_for_vars
 
                     original_vars = set(re.findall(r'(\[.*?\])', vars_source_text))
                     translated_vars = set(re.findall(r'(\[.*?\])', translated_text))
@@ -172,14 +172,13 @@ class BatchTranslateWorker(QRunnable):
                         variable_warnings_details.append(var_warn_detail)
                         self.signals.variables_warning.emit(var_warn_detail) 
 
-                    item_data[text_key_to_update] = translated_text
-                    item_data['is_modified_session'] = True
+                    item_data.current_text = translated_text
+                    item_data.is_modified_session = True
                     made_changes = True
 
-                    self.signals.item_updated.emit(item_index, translated_text, item_data.copy())
-                    print(f"DEBUG [Worker]: Before emit item_updated for index {item_index}. "
-                          f"Presence of 'parsed_data': {'parsed_data' in item_data}. "
-                          f"Data: {item_data.get('parsed_data', 'Missing')}")
+                    self.signals.item_updated.emit(item_index, translated_text, item_data)
+                    logger.debug(f"DEBUG [Worker]: Before emit item_updated for index {item_index}. "
+                          f"Parsed data present: {item_data.parsed_data is not None}")
                     success_count += 1
 
                 elif not translated_text:
@@ -195,7 +194,7 @@ class BatchTranslateWorker(QRunnable):
             except Exception as e:
 
                  if self._is_canceled:
-                      print("--- BatchTranslateWorker: Canceled during exception handling ---")
+                      logger.debug("BatchTranslateWorker: Canceled during exception handling")
                       errors_details.append("- Task canceled by user.")
                       break
 
@@ -205,7 +204,7 @@ class BatchTranslateWorker(QRunnable):
                  err_detail += f": {type(e).__name__}"
                  errors_details.append(err_detail)
                  self.signals.error_occurred.emit(err_detail) 
-                 print(f"  Batch translate error detail: {err_detail}. Full error: {e}")
+                 logger.error(f"  Batch translate error detail: {err_detail}. Full error: {e}")
 
                  time.sleep(config.BATCH_TRANSLATE_DELAY * 2)
                  continue 
@@ -216,7 +215,7 @@ class BatchTranslateWorker(QRunnable):
         if made_changes:
             self.signals.request_mark_modified.emit()
 
-        print(f"--- BatchTranslateWorker: Run finished. Processed: {processed_count}, Success: {success_count}, Errors: {error_count}, Warnings: {variable_mismatch_count} ---")
+        logger.debug(f"BatchTranslateWorker: Run finished. Processed: {processed_count}, Success: {success_count}, Errors: {error_count}, Warnings: {variable_mismatch_count}")
         results = {
             'processed': processed_count, 'total': total_items,
             'success': success_count, 'errors': error_count,
@@ -227,24 +226,24 @@ class BatchTranslateWorker(QRunnable):
         self.signals.finished.emit(results)
 
 def edit_with_ai(main_window):
-    print("--- [edit_with_ai] Action triggered. Ensuring Gemini is initialized... ---") 
+    logger.debug("[edit_with_ai] Action triggered. Ensuring Gemini is initialized...") 
 
     if not settings_manager.ensure_gemini_initialized(main_window, force_init=True):
 
-        print("--- [edit_with_ai] ensure_gemini_initialized returned False. Aborting. ---") 
+        logger.warning("[edit_with_ai] ensure_gemini_initialized returned False. Aborting.") 
 
         main_window.statusBar().showMessage(tr("edit_ai_failed_init"), 5000)
         return
 
     if ai.no_ai or ai.gemini_model is None:
-        print(f"--- [edit_with_ai] Check failed AFTER ensure_gemini_initialized. "
-              f"ai.no_ai={ai.no_ai}, ai.gemini_model is None={ai.gemini_model is None} ---") 
+        logger.warning(f"[edit_with_ai] Check failed AFTER ensure_gemini_initialized. "
+              f"ai.no_ai={ai.no_ai}, ai.gemini_model is None={ai.gemini_model is None}") 
         main_window.statusBar().showMessage(tr("edit_ai_gemini_unavailable"), 5000)
         QMessageBox.warning(main_window, tr("edit_ai_gemini_error_title"),
                             tr("edit_ai_gemini_error_msg"))
         return
 
-    print("--- [edit_with_ai] Gemini checks passed. Proceeding to open dialog. ---") 
+    logger.debug("[edit_with_ai] Gemini checks passed. Proceeding to open dialog.") 
     item_index = main_window._get_current_item_index()
     current_file_data = main_window._get_current_file_data()
 
@@ -252,12 +251,12 @@ def edit_with_ai(main_window):
         main_window.statusBar().showMessage(tr("edit_ai_select_item"), 3000)
         return
 
-    current_items = current_file_data.get('items')
-    current_mode = current_file_data.get('mode')
-    table_widget = current_file_data.get('table_widget')
+    current_items = current_file_data.items
+    current_mode = current_file_data.mode
+    table_widget = getattr(current_file_data, 'table_widget', None)
 
     if not current_items or not current_mode or not table_widget or not (0 <= item_index < len(current_items)):
-        print("Error: edit_with_ai - Invalid data state.")
+        logger.error("edit_with_ai - Invalid data state.")
         main_window.statusBar().showMessage(tr("edit_ai_data_error"), 4000)
         return
 
@@ -269,8 +268,8 @@ def edit_with_ai(main_window):
 
         if updated_items and 0 <= edited_item_index < len(updated_items):
             edited_item = updated_items[edited_item_index]
-            text_key = 'translated_text' if current_mode == 'translate' else 'current_text'
-            edited_text = edited_item.get(text_key, '')
+            # text_key logic removed
+            edited_text = edited_item.current_text or ''
 
             table_manager.update_table_item_text(main_window, table_widget, edited_item_index, 4, edited_text)
 
@@ -279,27 +278,27 @@ def edit_with_ai(main_window):
             main_window._set_current_tab_modified(True)
             main_window.statusBar().showMessage(tr("edit_ai_success", item=edited_item_index + 1), 3000)
         else:
-            print(f"Error: Could not retrieve updated item data after AI edit for index {edited_item_index}")
+            logger.error(f"Could not retrieve updated item data after AI edit for index {edited_item_index}")
             main_window.statusBar().showMessage(tr("edit_ai_update_error"), 5000)
 
 def translate_with_google(main_window):
-    print("--- [translate_with_google] Action triggered. Checking prerequisites... ---") 
+    logger.debug("[translate_with_google] Action triggered. Checking prerequisites...") 
 
     if not ai.is_internet_available():
-        print("--- [translate_with_google] Network check failed. ---") 
+        logger.warning("[translate_with_google] Network check failed.") 
         main_window.statusBar().showMessage(tr("google_trans_unavailable_net"), 4000)
         QMessageBox.warning(main_window, tr("error_no_network_title"), tr("error_no_network_msg_google"))
         return
 
     Translator = ai._lazy_import_translator()
     if Translator is None:
-        print("--- [translate_with_google] deep-translator library check failed. ---") 
+        logger.warning("[translate_with_google] deep-translator library check failed.") 
         main_window.statusBar().showMessage(tr("google_trans_unavailable_lib"), 4000)
         QMessageBox.critical(main_window, tr("error_library_not_found_title"),
                              tr("error_library_not_found_msg"))
         return
 
-    print("--- [translate_with_google] Prerequisites met. Proceeding... ---") 
+    logger.debug("[translate_with_google] Prerequisites met. Proceeding...") 
     item_index = main_window._get_current_item_index()
     current_file_data = main_window._get_current_file_data()
 
@@ -307,12 +306,12 @@ def translate_with_google(main_window):
         main_window.statusBar().showMessage(tr("google_trans_select_item"), 3000)
         return
 
-    current_items = current_file_data.get('items')
-    current_mode = current_file_data.get('mode')
-    table_widget = current_file_data.get('table_widget')
+    current_items = current_file_data.items
+    current_mode = current_file_data.mode
+    table_widget = getattr(current_file_data, 'table_widget', None)
 
     if not current_items or not current_mode or not table_widget or not (0 <= item_index < len(current_items)):
-        print("Error: translate_with_google - Invalid data state.")
+        logger.error("translate_with_google - Invalid data state.")
         main_window.statusBar().showMessage(tr("google_trans_data_error"), 4000)
         return
 
@@ -324,8 +323,8 @@ def translate_with_google(main_window):
 
         if updated_items and 0 <= translated_item_index < len(updated_items):
             translated_item = updated_items[translated_item_index]
-            text_key = 'translated_text' if current_mode == 'translate' else 'current_text'
-            translated_text = translated_item.get(text_key, '')
+            # text_key logic removed
+            translated_text = translated_item.current_text or ''
 
             table_manager.update_table_item_text(main_window, table_widget, translated_item_index, 4, translated_text)
             table_manager.update_table_row_style(table_widget, translated_item_index, translated_item)
@@ -333,7 +332,7 @@ def translate_with_google(main_window):
             main_window._set_current_tab_modified(True)
             main_window.statusBar().showMessage(tr("google_trans_success", item=translated_item_index + 1), 3000)
         else:
-            print(f"Error: Could not retrieve updated item data after Google Translate for index {translated_item_index}")
+            logger.error(f"Could not retrieve updated item data after Google Translate for index {translated_item_index}")
             main_window.statusBar().showMessage(tr("google_trans_update_error"), 5000)
 
 def batch_translate_google(main_window):
@@ -361,12 +360,12 @@ def batch_translate_google(main_window):
         main_window.statusBar().showMessage(tr("batch_no_selected_rows"), 3000)
         return
 
-    current_items = current_file_data.get('items')
-    current_mode = current_file_data.get('mode')
-    current_file_lines = current_file_data.get('lines')
+    current_items = current_file_data.items
+    current_mode = current_file_data.mode
+    current_file_lines = current_file_data.lines
 
     if not current_items or not current_mode or not current_file_lines:
-        print("Error: batch_translate_google - Invalid data state.")
+        logger.error("batch_translate_google - Invalid data state.")
         main_window.statusBar().showMessage(tr("batch_data_error"), 4000)
         return
 
@@ -397,7 +396,7 @@ def batch_translate_google(main_window):
     progress.setAutoClose(False)
     progress.setAutoReset(False) 
 
-    items_copy = [item.copy() for item in current_items] 
+    items_copy = [replace(item) for item in current_items] 
     lines_copy = list(current_file_lines) 
 
     worker_signals = WorkerSignals()
@@ -429,10 +428,9 @@ def batch_translate_google(main_window):
 
     QThreadPool.globalInstance().start(worker)
 
-    progress.show()
     main_window.statusBar().showMessage(tr("batch_starting"), 0) 
 
-    items_copy = [item.copy() for item in current_items] 
+    items_copy = [replace(item) for item in current_items] 
     lines_copy = list(current_file_lines) 
 
     worker_signals = WorkerSignals()
@@ -492,20 +490,19 @@ def toggle_breakpoint(main_window):
         main_window.statusBar().showMessage(tr("marker_select_line"), 3000)
         return
 
-    current_items = current_file_data.get('items')
-    current_breakpoints = current_file_data.get('breakpoints')
-    current_mode = current_file_data.get('mode')
-    table_widget = current_file_data.get('table_widget')
+    current_items = current_file_data.items
+    current_breakpoints = current_file_data.breakpoints
+    current_mode = current_file_data.mode
+    table_widget = getattr(current_file_data, 'table_widget', None)
 
     if not all([current_items, current_breakpoints is not None, current_mode, table_widget]) or not (0 <= item_index < len(current_items)):
-         print("Error: toggle_breakpoint - Invalid data state.")
+         logger.error("toggle_breakpoint - Invalid data state.")
          main_window.statusBar().showMessage(tr("marker_data_error"), 4000)
          return
 
     item = current_items[item_index]
 
-    line_idx_key = 'translated_line_index' if current_mode == "translate" else 'line_index'
-    line_idx = item.get(line_idx_key)
+    line_idx = item.line_index
 
     if line_idx is None:
         main_window.statusBar().showMessage(tr("marker_line_idx_error", item=item_index + 1), 4000)
@@ -513,16 +510,16 @@ def toggle_breakpoint(main_window):
 
     if line_idx in current_breakpoints:
         current_breakpoints.remove(line_idx)
-        item['has_breakpoint'] = False
+        item.has_breakpoint = False
         status_msg = tr("marker_removed", line=line_idx + 1)
     else:
         current_breakpoints.add(line_idx)
-        item['has_breakpoint'] = True
+        item.has_breakpoint = True
         status_msg = tr("marker_set", line=line_idx + 1)
 
     table_manager.update_table_row_style(table_widget, item_index, item)
 
-    current_file_data['breakpoint_modified'] = True
+    current_file_data.breakpoint_modified = True
     main_window._set_current_tab_modified(True)
     main_window.statusBar().showMessage(status_msg, 3000)
 
@@ -530,9 +527,9 @@ def go_to_next_breakpoint(main_window):
     current_file_data = main_window._get_current_file_data()
     if not current_file_data: return
 
-    current_items = current_file_data.get('items')
-    current_breakpoints = current_file_data.get('breakpoints')
-    table_widget = current_file_data.get('table_widget')
+    current_items = current_file_data.items
+    current_breakpoints = current_file_data.breakpoints
+    table_widget = getattr(current_file_data, 'table_widget', None)
 
     if not current_items or not current_breakpoints or not table_widget:
         main_window.statusBar().showMessage(tr("marker_nav_no_markers"), 3000)
@@ -543,12 +540,12 @@ def go_to_next_breakpoint(main_window):
     found_item_index = -1
 
     for i in range(start_index + 1, num_items):
-        if current_items[i].get('has_breakpoint', False):
+        if current_items[i].has_breakpoint:
             found_item_index = i
             break
     else: 
         for i in range(start_index + 1):
-            if current_items[i].get('has_breakpoint', False):
+            if current_items[i].has_breakpoint:
                 found_item_index = i
                 main_window.statusBar().showMessage(tr("marker_nav_first"), 2000)
                 break
@@ -564,9 +561,9 @@ def clear_all_breakpoints(main_window):
     current_file_data = main_window._get_current_file_data()
     if not current_file_data: return
 
-    current_items = current_file_data.get('items')
-    current_breakpoints = current_file_data.get('breakpoints')
-    table_widget = current_file_data.get('table_widget')
+    current_items = current_file_data.items
+    current_breakpoints = current_file_data.breakpoints
+    table_widget = getattr(current_file_data, 'table_widget', None)
 
     if not current_items or current_breakpoints is None or not table_widget:
          main_window.statusBar().showMessage(tr("marker_clear_no_data"), 3000)
@@ -576,7 +573,7 @@ def clear_all_breakpoints(main_window):
         main_window.statusBar().showMessage(tr("marker_clear_none_set"), 3000)
         return
 
-    file_name = os.path.basename(current_file_data.get('output_path', main_window.current_file_path or "?"))
+    file_name = os.path.basename(current_file_data.output_path or main_window.current_file_path or "?")
     reply = QMessageBox.question(main_window, tr("confirmation"),
                                  tr("marker_clear_confirm_msg", count=len(current_breakpoints), file=file_name),
                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -587,13 +584,13 @@ def clear_all_breakpoints(main_window):
         current_breakpoints.clear()
 
         for i, item in enumerate(current_items):
-            if item.get('has_breakpoint', False):
-                item['has_breakpoint'] = False
+            if item.has_breakpoint:
+                item.has_breakpoint = False
                 if i < table_widget.rowCount(): 
                      table_manager.update_table_row_style(table_widget, i, item)
 
         if breakpoints_were_present:
-            current_file_data['breakpoint_modified'] = True
+            current_file_data.breakpoint_modified = True
             main_window._set_current_tab_modified(True)
             main_window.statusBar().showMessage(tr("marker_clear_success"), 3000)
 
@@ -603,10 +600,10 @@ def insert_line(main_window):
         main_window.statusBar().showMessage(tr("insert_line_mode_error"), 3000)
         return
 
-    current_items = current_file_data.get('items')
-    current_table = current_file_data.get('table_widget')
-    current_file_lines = current_file_data.get('lines')
-    current_breakpoints = current_file_data.get('breakpoints')
+    current_items = current_file_data.items
+    current_table = getattr(current_file_data, 'table_widget', None)
+    current_file_lines = current_file_data.lines
+    current_breakpoints = current_file_data.breakpoints
 
     if not all([current_items is not None, current_table, current_file_lines is not None, current_breakpoints is not None]):
         main_window.statusBar().showMessage(tr("insert_line_data_error"), 3000)
@@ -646,22 +643,23 @@ def insert_line(main_window):
 
         current_file_lines.insert(new_line_file_index, formatted_line)
 
-        new_item = {
-            "line_index": new_line_file_index, 
-            "original_text": parsed_info['text'], 
-            "current_text": parsed_info['text'],
-            "initial_text": parsed_info['text'], 
-            "is_modified_session": True, 
-            "character_tag": parsed_info.get('character_tag'), 
-            "type": parsed_info['type'],
-            "parsed_data": parsed_info,
-            "has_breakpoint": False
-        }
+        new_item = ParsedItem(
+            line_index=new_line_file_index, 
+            original_text=parsed_info['text'], 
+            current_text=parsed_info['text'],
+            initial_text=parsed_info['text'], 
+            is_modified_session=True, 
+            type=parsed_info['type'],
+            character_tag=parsed_info.get('character_tag'),
+            parsed_data=parsed_info,
+            has_breakpoint=False
+        )
+        # Note: variable_name and character_trans are None by default, which is correct for direct mode new lines.
 
         current_items.insert(new_item_list_index, new_item)
 
         for i in range(new_item_list_index + 1, len(current_items)):
-            current_items[i]['line_index'] += 1
+            current_items[i].line_index += 1
 
         new_breakpoints = set()
         bp_indices_changed = False
@@ -671,9 +669,9 @@ def insert_line(main_window):
                 bp_indices_changed = True
             else:
                 new_breakpoints.add(bp_idx)
-        current_file_data['breakpoints'] = new_breakpoints
+        current_file_data.breakpoints = new_breakpoints
         if bp_indices_changed:
-             current_file_data['breakpoint_modified'] = True
+             current_file_data.breakpoint_modified = True
 
         was_blocked = main_window._block_item_changed_signal
         main_window._block_item_changed_signal = True
@@ -700,20 +698,20 @@ def delete_line(main_window):
         return
 
     delete_item_index = main_window._get_current_item_index()
-    current_items = current_file_data.get('items')
-    current_table = current_file_data.get('table_widget')
-    current_file_lines = current_file_data.get('lines')
-    current_breakpoints = current_file_data.get('breakpoints')
+    current_items = current_file_data.items
+    current_table = getattr(current_file_data, 'table_widget', None)
+    current_file_lines = current_file_data.lines
+    current_breakpoints = current_file_data.breakpoints
 
     if not all([current_items, current_table, current_file_lines is not None, current_breakpoints is not None]) or not (0 <= delete_item_index < len(current_items)):
         main_window.statusBar().showMessage(tr("delete_line_select_error"), 3000)
         return
 
     item_to_delete = current_items[delete_item_index]
-    line_index_to_delete = item_to_delete['line_index']
+    line_index_to_delete = item_to_delete.line_index
 
-    file_name = os.path.basename(current_file_data.get('output_path', main_window.current_file_path or "?"))
-    text_preview = item_to_delete.get('current_text', '')[:50] + ("..." if len(item_to_delete.get('current_text', '')) > 50 else "")
+    file_name = os.path.basename(current_file_data.output_path or main_window.current_file_path or "?")
+    text_preview = (item_to_delete.current_text or '')[:50] + ("..." if len(item_to_delete.current_text or '') > 50 else "")
     reply = QMessageBox.question(main_window, tr("delete_line_confirm_title"),
                                  tr("delete_line_confirm_msg", line=line_index_to_delete + 1, file=file_name, text=text_preview),
                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -722,7 +720,7 @@ def delete_line(main_window):
     if reply == QMessageBox.StandardButton.Yes:
         try:
 
-            breakpoint_removed = item_to_delete.get('has_breakpoint', False)
+            breakpoint_removed = item_to_delete.has_breakpoint
 
             if 0 <= line_index_to_delete < len(current_file_lines):
                 del current_file_lines[line_index_to_delete]
@@ -732,7 +730,7 @@ def delete_line(main_window):
             del current_items[delete_item_index]
 
             for i in range(delete_item_index, len(current_items)):
-                current_items[i]['line_index'] -= 1
+                current_items[i].line_index -= 1
 
             new_breakpoints = set()
             bp_indices_changed = False
@@ -745,9 +743,9 @@ def delete_line(main_window):
                     bp_indices_changed = True
                 else:
                     new_breakpoints.add(bp_idx)
-            current_file_data['breakpoints'] = new_breakpoints
+            current_file_data.breakpoints = new_breakpoints
             if bp_indices_changed:
-                 current_file_data['breakpoint_modified'] = True
+                 current_file_data.breakpoint_modified = True
 
             was_blocked = main_window._block_item_changed_signal
             main_window._block_item_changed_signal = True
@@ -893,12 +891,12 @@ def handle_replace(main_window):
                         if new_line is not None:
                             current_lines[line_idx] = new_line
                         else:
-                            print(f"Warning: Could not format line {line_idx} after replace.")
+                            logger.warning(f"Could not format line {line_idx} after replace.")
                             QMessageBox.warning(main_window, tr("replace_format_error_title"),
                                                 tr("replace_format_error_msg", line=line_idx+1))
 
                     else:
-                        print(f"Warning: Could not update line {line_idx} after replace (missing index or parsed_data).")
+                        logger.warning(f"Could not update line {line_idx} after replace (missing index or parsed_data).")
 
                 main_window._set_current_tab_modified(True)
                 main_window.statusBar().showMessage(tr("replace_success_finding_next", line=item_index + 1), 2000)
@@ -912,7 +910,7 @@ def handle_replace(main_window):
         except re.error as e:
 
              main_window.statusBar().showMessage(tr("replace_regex_error", error=e), 4000)
-             print(f"Regex error during replace: {e}")
+             logger.error(f"Regex error during replace: {e}")
 
     else:
 

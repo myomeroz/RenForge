@@ -1,6 +1,9 @@
 import os
 import re
 
+from renforge_logger import get_logger
+logger = get_logger("gui.dialog")
+
 try:
     from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
                               QLineEdit, QMessageBox, QDialogButtonBox, QGroupBox,
@@ -9,14 +12,17 @@ try:
     from PyQt6.QtCore import Qt, QTimer
     from PyQt6.QtGui import QFont
 except ImportError:
-     print("CRITICAL ERROR: PyQt6 is required for GUI dialogs but not found.")
+     logger.critical("PyQt6 is required for GUI dialogs but not found.")
      raise 
 
 try:
     import renforge_config as config
     import renforge_core as core
     import renforge_parser as parser
+    import renforge_parser as parser
     from locales import tr
+    from renforge_models import TabData, ParsedItem
+    from renforge_enums import ContextType, ItemType
 
     from renforge_ai import (refine_text_with_gemini, GoogleTranslator,
                             load_api_key, save_api_key, _lazy_import_translator, 
@@ -25,7 +31,7 @@ try:
 
     from renforge_settings import load_settings, save_settings
 except ImportError as e:
-     print(f"CRITICAL ERROR: Failed to import renforge modules in dialogs: {e}")
+     logger.critical(f"Failed to import renforge modules in dialogs: {e}")
      raise
 
 class AIEditDialog(QDialog):
@@ -44,9 +50,9 @@ class AIEditDialog(QDialog):
              QTimer.singleShot(0, self.reject)
              return
 
-        self.item = current_items[item_index]
-        self.char_tag = self.item.get('character_tag') or self.item.get('character_trans')
-        self.current_file_data = parent._get_current_file_data() 
+        self.item: ParsedItem = current_items[item_index]
+        self.char_tag = self.item.character_tag or self.item.character_trans
+        self.current_file_data: TabData = parent._get_current_file_data() 
 
         if not self.current_file_data:
             QMessageBox.critical(parent, tr("error_data"), tr("error_data_file", index=item_index))
@@ -68,7 +74,7 @@ class AIEditDialog(QDialog):
             original_layout = QVBoxLayout(original_group)
             self.original_text = QTextEdit()
             self.original_text.setReadOnly(True)
-            self.original_text.setPlainText(self.item.get('original_text', ''))
+            self.original_text.setPlainText(self.item.original_text)
             self.original_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             original_layout.addWidget(self.original_text)
             text_splitter.addWidget(original_group) 
@@ -78,8 +84,8 @@ class AIEditDialog(QDialog):
         current_layout = QVBoxLayout(current_group)
         self.current_text = QTextEdit()
         self.current_text.setReadOnly(True) 
-        text_key = 'translated_text' if edit_mode == "translate" else 'current_text'
-        self.current_text.setPlainText(self.item.get(text_key, ''))
+        # text_key logic removed, use unified current_text
+        self.current_text.setPlainText(self.item.current_text)
         self.current_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         current_layout.addWidget(self.current_text)
         text_splitter.addWidget(current_group) 
@@ -131,7 +137,7 @@ class AIEditDialog(QDialog):
         instruction = self.instruction_edit.toPlainText().strip()
         if not instruction:
             instruction = "Improve the text for clarity, grammar, and naturalness, preserving the original meaning and style."
-            print(f"GUI Dialog: Using default instruction: '{instruction}'")
+            logger.debug(f"GUI Dialog: Using default instruction: '{instruction}'")
 
         self.send_btn.setEnabled(False)
         self.send_btn.setText(tr("btn_sending"))
@@ -141,28 +147,25 @@ class AIEditDialog(QDialog):
 
         try:
 
-            text_key = 'translated_text' if self.edit_mode == "translate" else 'current_text'
-            original_text_key = 'original_text'
-
-            current_text_for_ai = self.item.get(text_key, '')
-            original_text_for_ai = self.item.get(original_text_key, '') if self.edit_mode == "translate" else current_text_for_ai
+            current_text_for_ai = self.item.current_text
+            original_text_for_ai = self.item.original_text if self.edit_mode == "translate" else current_text_for_ai
 
             context = core.get_context_for_item( 
                 self.item_index,
-                self.current_file_data.get('items', []),
-                self.current_file_data.get('lines', []),
+                self.current_file_data.items,
+                self.current_file_data.lines,
                 self.edit_mode
             )
 
-            source_lang = self.current_file_data.get('source_language') or config.DEFAULT_SOURCE_LANG
-            target_lang = self.current_file_data.get('target_language') or config.DEFAULT_TARGET_LANG
+            source_lang = self.current_file_data.source_language or config.DEFAULT_SOURCE_LANG
+            target_lang = self.current_file_data.target_language or config.DEFAULT_TARGET_LANG
 
-            print(f"--- [AIEditDialog._send_request] Calling refine_text_with_gemini... ---") 
+            logger.debug(f"[AIEditDialog._send_request] Calling refine_text_with_gemini...") 
             refined_text, error_msg = refine_text_with_gemini(
                 original_text_for_ai, current_text_for_ai, instruction, context,
                 source_lang, target_lang, self.edit_mode, self.char_tag
             )
-            print(f"--- [AIEditDialog._send_request] refine_text_with_gemini returned. Refined Text: {refined_text is not None}, Error Msg: '{error_msg}' ---") 
+            logger.debug(f"[AIEditDialog._send_request] refine_text_with_gemini returned. Refined: {refined_text is not None}, Error: '{error_msg}'") 
 
             if refined_text is not None:
                 self.result_text.setPlainText(refined_text)
@@ -173,14 +176,14 @@ class AIEditDialog(QDialog):
                     error_display += f"\n\nReason: {error_msg}"
                 else:
                     error_display += "\n\nReason unknown (possibly an internal error)."
-                print(f"--- [AIEditDialog._send_request] Displaying error: {error_display} ---") 
+                logger.warning(f"[AIEditDialog._send_request] Displaying error: {error_display}") 
                 self.result_text.setPlainText(error_display)
                 self.apply_btn.setEnabled(False)
                 QMessageBox.warning(self, tr("error_gemini"), error_display)
 
         except Exception as e:
             error_display = f"An UNEXPECTED error occurred while processing the request to Gemini:\n{type(e).__name__}: {e}"
-            print(f"--- [AIEditDialog._send_request] CRITICAL ERROR in try block: {error_display} ---") 
+            logger.critical(f"[AIEditDialog._send_request] CRITICAL ERROR: {error_display}") 
             import traceback
             traceback.print_exc()
             self.result_text.setPlainText(error_display)
@@ -201,11 +204,11 @@ class AIEditDialog(QDialog):
              QMessageBox.warning(self, tr("ai_no_result"), tr("ai_no_result"))
              return
 
-        text_key_to_update = 'translated_text' if self.edit_mode == "translate" else 'current_text'
+        # text_key logic removed, using unified current_text
 
-        text_before_refinement = self.item.get(text_key_to_update, '')
+        text_before_refinement = self.item.current_text
 
-        text_for_var_comparison = self.item.get('original_text', '') if self.edit_mode == "translate" else text_before_refinement
+        text_for_var_comparison = self.item.original_text if self.edit_mode == "translate" else text_before_refinement
 
         original_vars = set(re.findall(r'(\[.*?\])', text_for_var_comparison))
         refined_vars = set(re.findall(r'(\[.*?\])', refined_text))
@@ -223,16 +226,16 @@ class AIEditDialog(QDialog):
             if result != QMessageBox.StandardButton.Yes:
                 return 
 
-        self.item[text_key_to_update] = refined_text
-        self.item['is_modified_session'] = True
+        self.item.current_text = refined_text
+        self.item.is_modified_session = True
 
-        if self.item.get('initial_text') is None:
-             self.item['initial_text'] = text_before_refinement 
+        if self.item.initial_text is None:
+             self.item.initial_text = text_before_refinement 
 
         if self.edit_mode == "translate":
-            line_idx = self.item.get('translated_line_index')
-            parsed_data = self.item.get('parsed_data')
-            current_file_lines = self.current_file_data.get('lines')
+            line_idx = self.item.line_index
+            parsed_data = self.item.parsed_data
+            current_file_lines = self.current_file_data.lines
 
             if line_idx is not None and parsed_data is not None and current_file_lines and 0 <= line_idx < len(current_file_lines):
                 new_line = parser.format_line_from_components(self.item, refined_text)
@@ -244,15 +247,15 @@ class AIEditDialog(QDialog):
 
                     QMessageBox.critical(self, tr("error_formatting"),
                                          tr("error_formatting_message"))
-                    self.item[text_key_to_update] = text_before_refinement 
-                    self.item['is_modified_session'] = (self.item[text_key_to_update] != self.item.get('initial_text')) 
+                    self.item.current_text = text_before_refinement 
+                    self.item.is_modified_session = (self.item.current_text != self.item.initial_text) 
 
             else:
 
                  QMessageBox.critical(self, tr("error_line_data"),
                                    tr("error_line_data_message", line=line_idx))
-                 self.item[text_key_to_update] = text_before_refinement
-                 self.item['is_modified_session'] = (self.item[text_key_to_update] != self.item.get('initial_text'))
+                 self.item.current_text = text_before_refinement
+                 self.item.is_modified_session = (self.item.current_text != self.item.initial_text)
 
         else: 
             self.accept()
@@ -288,8 +291,8 @@ class GoogleTranslateDialog(QDialog):
         settings_group = QGroupBox("Translation Settings (from main window)")
         settings_layout = QGridLayout(settings_group)
 
-        self.source_code = self.current_file_data.get('source_language', config.DEFAULT_SOURCE_LANG)
-        self.target_code = self.current_file_data.get('target_language', config.DEFAULT_TARGET_LANG)
+        self.source_code = self.current_file_data.source_language or config.DEFAULT_SOURCE_LANG
+        self.target_code = self.current_file_data.target_language or config.DEFAULT_TARGET_LANG
 
         all_languages = parent.google_languages if hasattr(parent, 'google_languages') else {}
         source_lang_name = all_languages.get(self.source_code, self.source_code) 
@@ -311,7 +314,7 @@ class GoogleTranslateDialog(QDialog):
 
         text_to_translate_val = ""
         if edit_mode == "translate" or edit_mode == "direct": 
-             text_to_translate_val = self.item.get('original_text', '')
+             text_to_translate_val = self.item.original_text
 
         source_group = QGroupBox("Text to Translate (Original)")
         source_layout = QVBoxLayout(source_group)
@@ -323,8 +326,8 @@ class GoogleTranslateDialog(QDialog):
         text_splitter.addWidget(source_group)
 
         current_text_val = ""
-        text_key = 'translated_text' if edit_mode == "translate" else 'current_text'
-        current_text_val = self.item.get(text_key, '')
+        # text_key logic removed
+        current_text_val = self.item.current_text
         current_group = QGroupBox("Current Text/Translation")
         current_layout = QVBoxLayout(current_group)
         self.current_text = QTextEdit()
@@ -421,11 +424,11 @@ class GoogleTranslateDialog(QDialog):
              QMessageBox.warning(self, tr("translate_no_result"), tr("translate_no_result"))
              return
 
-        text_key_to_update = 'translated_text' if self.edit_mode == "translate" else 'current_text'
+        # text_key logic removed
 
-        text_before_translation = self.item.get(text_key_to_update, '')
+        text_before_translation = self.item.current_text
 
-        text_for_var_comparison = self.item.get('original_text', '') if self.edit_mode == "translate" else text_before_translation
+        text_for_var_comparison = self.item.original_text if self.edit_mode == "translate" else text_before_translation
 
         original_vars = set(re.findall(r'(\[.*?\])', text_for_var_comparison))
         translated_vars = set(re.findall(r'(\[.*?\])', translated_text))
@@ -443,15 +446,15 @@ class GoogleTranslateDialog(QDialog):
             if result != QMessageBox.StandardButton.Yes:
                 return
 
-        self.item[text_key_to_update] = translated_text
-        self.item['is_modified_session'] = True
-        if self.item.get('initial_text') is None:
-             self.item['initial_text'] = text_before_translation
+        self.item.current_text = translated_text
+        self.item.is_modified_session = True
+        if self.item.initial_text is None:
+             self.item.initial_text = text_before_translation
 
         if self.edit_mode == "translate":
-            line_idx = self.item.get('translated_line_index')
-            parsed_data = self.item.get('parsed_data')
-            current_file_lines = self.current_file_data.get('lines')
+            line_idx = self.item.line_index
+            parsed_data = self.item.parsed_data
+            current_file_lines = self.current_file_data.lines
 
             if line_idx is not None and parsed_data is not None and current_file_lines and 0 <= line_idx < len(current_file_lines):
 
@@ -462,13 +465,13 @@ class GoogleTranslateDialog(QDialog):
                 else:
                     QMessageBox.critical(self, tr("error_formatting"),
                                          tr("error_formatting_message"))
-                    self.item[text_key_to_update] = text_before_translation
-                    self.item['is_modified_session'] = (self.item[text_key_to_update] != self.item.get('initial_text'))
+                    self.item.current_text = text_before_translation
+                    self.item.is_modified_session = (self.item.current_text != self.item.initial_text)
             else:
                  QMessageBox.critical(self, tr("error_line_data"),
                                    tr("error_line_data_message", line=line_idx))
-                 self.item[text_key_to_update] = text_before_translation
-                 self.item['is_modified_session'] = (self.item[text_key_to_update] != self.item.get('initial_text'))
+                 self.item.current_text = text_before_translation
+                 self.item.is_modified_session = (self.item.current_text != self.item.initial_text)
         else: 
             self.accept() 
 
@@ -518,7 +521,7 @@ class ApiKeyDialog(QDialog):
         current_key = load_api_key() 
         if current_key:
             masked_key = "..." + current_key[-4:] if len(current_key) > 4 else current_key
-            self.current_key_label.setText(tr("api_key_current", key=masked_key))
+            self.current_key_label.setText(tr("api_key_current", api_key=masked_key))
             self.current_key_label.setStyleSheet("color: #90EE90;") 
         else:
             self.current_key_label.setText(tr("api_key_not_saved"))
@@ -570,11 +573,11 @@ class ApiKeyDialog(QDialog):
                  if save_status in ["saved", "removed"]:
 
                       self.parent().settings = updated_settings.copy() 
-                      print(f"Parent window settings updated in memory (status: {save_status}).")
+                      logger.debug(f"Parent window settings updated in memory (status: {save_status}).")
                  else: 
-                      print(f"No changes made to API key (status: {save_status}). Parent settings not updated.")
+                      logger.debug(f"No changes made to API key (status: {save_status}). Parent settings not updated.")
              else:
-                 print("Warning: ApiKeyDialog has no parent to update settings for.")
+                 logger.warning("ApiKeyDialog has no parent to update settings for.")
 
              self.accept()
 
@@ -843,4 +846,4 @@ class SettingsDialog(QDialog):
 
         return "manual" if self.manual_mode_radio.isChecked() else "auto"
 
-print("gui/renforge_gui_dialogs.py loaded")
+logger.debug("gui/renforge_gui_dialogs.py loaded")

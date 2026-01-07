@@ -1,12 +1,15 @@
 import os
 import sys
 
+from renforge_logger import get_logger
+logger = get_logger("gui.settings_manager")
+
 try:
 
     from PyQt6.QtWidgets import QMessageBox, QDialog
     from PyQt6.QtCore import QTimer 
 except ImportError:
-    print("CRITICAL ERROR: PyQt6 is required for settings management but not found.")
+    logger.critical("PyQt6 is required for settings management but not found.")
     sys.exit(1)
 
 import renforge_config as config
@@ -21,7 +24,7 @@ def load_initial_settings(main_window):
     main_window.settings.setdefault("mode_selection_method", config.DEFAULT_MODE_SELECTION_METHOD)
     main_window.settings.setdefault("api_key_set", bool(ai.load_api_key())) 
 
-    print(f"Initial settings loaded: {main_window.settings}")
+    logger.debug(f"Initial settings loaded: {main_window.settings}")
 
 def check_initial_mode_setting(main_window):
     _perform_initial_mode_check(main_window)
@@ -67,7 +70,7 @@ def show_settings_dialog(main_window):
             QMessageBox.warning(main_window, "Save Error", "Failed to save settings.")
             return False
         else:
-            print(f"Settings saved. Mode selection method: {new_mode_method}")
+            logger.debug(f"Settings saved. Mode selection method: {new_mode_method}")
             main_window.statusBar().showMessage("Settings saved.", 4000)
             return True
     return False 
@@ -78,12 +81,12 @@ def show_api_key_dialog(main_window):
 
     save_status_internal = dialog.get_save_status()
 
-    print(f"ApiKeyDialog closed. Result: {dialog_result}, Internal Save Status: '{save_status_internal}'")
+    logger.debug(f"ApiKeyDialog closed. Result: {dialog_result}, Internal Save Status: '{save_status_internal}'")
 
     if dialog_result == QDialog.DialogCode.Accepted:
 
         if save_status_internal == "saved":
-            print("API key saved/updated (reported by dialog).")
+            logger.info("API key saved/updated (reported by dialog).")
 
             main_window.settings['api_key_set'] = True
 
@@ -92,7 +95,7 @@ def show_api_key_dialog(main_window):
             ensure_gemini_initialized(main_window)
             return True 
         elif save_status_internal == "removed":
-            print("API key removed (reported by dialog).")
+            logger.info("API key removed (reported by dialog).")
 
             main_window.settings['api_key_set'] = False
 
@@ -101,15 +104,15 @@ def show_api_key_dialog(main_window):
             main_window._update_ui_state()
             return True 
         elif save_status_internal == "unchanged":
-            print("API key dialog closed (Accepted), key state unchanged.")
+            logger.debug("API key dialog closed (Accepted), key state unchanged.")
         elif save_status_internal == "error":
-             print("API key dialog closed (Accepted), but reported an error during save/delete.")
+             logger.error("API key dialog closed (Accepted), but reported an error during save/delete.")
 
         else:
-             print(f"API key dialog closed (Accepted) with unexpected status: {save_status_internal}")
+             logger.warning(f"API key dialog closed (Accepted) with unexpected status: {save_status_internal}")
 
     elif dialog_result == QDialog.DialogCode.Rejected:
-         print("API key dialog was cancelled.")
+         logger.debug("API key dialog was cancelled.")
 
     return save_status_internal in ["saved", "removed"]
 
@@ -120,9 +123,9 @@ def handle_target_language_changed(main_window):
 
     current_data = main_window._get_current_file_data()
     if current_data:
-        if current_data.get('target_language') != new_lang_code:
-            current_data['target_language'] = new_lang_code
-            print(f"Target language for tab '{os.path.basename(main_window.current_file_path)}' set to: {new_lang_code}")
+        if getattr(current_data, 'target_language', None) != new_lang_code:
+            current_data.target_language = new_lang_code
+            logger.debug(f"Target language for tab '{os.path.basename(main_window.current_file_path)}' set to: {new_lang_code}")
 
     else:
 
@@ -133,20 +136,20 @@ def handle_source_language_changed(main_window):
     main_window.source_language = new_lang_code
     current_data = main_window._get_current_file_data()
     if current_data:
-        if current_data.get('source_language') != new_lang_code:
-            current_data['source_language'] = new_lang_code
-            print(f"Source language for tab '{os.path.basename(main_window.current_file_path)}' set to: {new_lang_code}")
+        if getattr(current_data, 'source_language', None) != new_lang_code:
+            current_data.source_language = new_lang_code
+            logger.debug(f"Source language for tab '{os.path.basename(main_window.current_file_path)}' set to: {new_lang_code}")
 
 def handle_model_changed(main_window):
     new_model_text = main_window.model_combo.currentText()
 
     new_model = new_model_text if new_model_text != "None" else None 
 
-    print(f"--- [handle_model_changed] Model changed signal. New text: '{new_model_text}', Value to store: '{new_model}' ---")
+    logger.debug(f"[handle_model_changed] Model changed signal. New text: '{new_model_text}', Value to store: '{new_model}'")
 
     if main_window.selected_model != new_model:
         main_window.selected_model = new_model
-        print(f"  Updated main_window.selected_model to: {new_model}")
+        logger.debug(f"Updated main_window.selected_model to: {new_model}")
 
         if new_model:
             _reset_gemini_state(main_window, f"Model changed to {new_model}.")
@@ -156,25 +159,25 @@ def handle_model_changed(main_window):
             ai.no_ai = True
             ai.gemini_model = None
             main_window._update_ui_state()
-            print("  AI marked as unavailable due to 'None' selection.")
+            logger.debug("AI marked as unavailable due to 'None' selection.")
 
     current_data = main_window._get_current_file_data()
     if current_data:
         if current_data.get('selected_model') != new_model:
             current_data['selected_model'] = new_model
-            print(f"  Updated selected_model for tab '{os.path.basename(main_window.current_file_path)}' to: {new_model}")
+            logger.debug(f"Updated selected_model for tab '{os.path.basename(main_window.current_file_path)}' to: {new_model}")
     else:
-         print("  No active tab data to update.")
+         logger.debug("No active tab data to update.")
 
 def _reset_gemini_state(main_window, reason=""):
 
     if ai.gemini_model is not None:
-        print(f"Resetting Gemini state. Reason: {reason}")
+        logger.debug(f"Resetting Gemini state. Reason: {reason}")
         ai.gemini_model = None 
         ai.no_ai = True 
 
         ai._available_models_cache = None
-        print("Cleared Gemini model instance and marked AI as unavailable (will re-initialize on next use).")
+        logger.debug("Cleared Gemini model instance and marked AI as unavailable.")
         main_window._update_ui_state() 
     else:
 
@@ -183,15 +186,15 @@ def _reset_gemini_state(main_window, reason=""):
 
 def ensure_gemini_initialized(main_window, force_init=False):
     needs_init = ai.no_ai or ai.gemini_model is None
-    print(f"--- [ensure_gemini_initialized] Called. Needs init (no_ai or model is None): {needs_init}, Force: {force_init} ---")
+    logger.debug(f"[ensure_gemini_initialized] Called. Needs init: {needs_init}, Force: {force_init}")
 
     initialization_performed = False
     initialization_succeeded = False
 
     if needs_init or force_init:
-        print("--- [ensure_gemini_initialized] Checking internet before initialization attempt... ---")
+        logger.debug("[ensure_gemini_initialized] Checking internet before initialization...")
         if not ai.is_internet_available(): 
-             print("--- [ensure_gemini_initialized] Internet check failed. Skipping initialization. ---")
+             logger.warning("[ensure_gemini_initialized] Internet check failed. Skipping initialization.")
              ai.no_ai = True 
              ai.gemini_model = None 
              main_window.statusBar().showMessage("AI unavailable: no internet connection.", 5000)
@@ -199,17 +202,17 @@ def ensure_gemini_initialized(main_window, force_init=False):
              initialization_succeeded = False
         else:
 
-             print("--- [ensure_gemini_initialized] Internet check OK. Attempting initialization via _initialize_gemini... ---")
+             logger.debug("[ensure_gemini_initialized] Internet OK. Attempting initialization...")
              initialization_succeeded = _initialize_gemini(main_window)
              initialization_performed = True
-             print(f"--- [ensure_gemini_initialized] Initialization attempt result: {initialization_succeeded} ---")
+             logger.debug(f"[ensure_gemini_initialized] Initialization result: {initialization_succeeded}")
     else:
 
-         print("--- [ensure_gemini_initialized] AI already initialized. Skipping initialization call. ---")
+         logger.debug("[ensure_gemini_initialized] AI already initialized. Skipping.")
          initialization_succeeded = True 
 
     if initialization_performed:
-         print("--- [ensure_gemini_initialized] Updating model list after initialization attempt. ---")
+         logger.debug("[ensure_gemini_initialized] Updating model list after initialization.")
          main_window._update_model_list() 
 
     QTimer.singleShot(50, main_window._sync_model_selection)
@@ -217,7 +220,7 @@ def ensure_gemini_initialized(main_window, force_init=False):
     main_window._update_ui_state()
 
     final_ai_available = not ai.no_ai
-    print(f"--- [ensure_gemini_initialized] Finished. Final AI available status: {final_ai_available} ---")
+    logger.debug(f"[ensure_gemini_initialized] Finished. AI available: {final_ai_available}")
     return final_ai_available
 
 def _initialize_gemini(main_window):
@@ -225,7 +228,7 @@ def _initialize_gemini(main_window):
     api_key = ai.load_api_key()
 
     if not api_key:
-        print("Gemini initialization check: API key missing.")
+        logger.warning("Gemini initialization check: API key missing.")
         main_window.settings['api_key_set'] = False 
 
         QMessageBox.warning(main_window, "API Key Missing",
@@ -240,7 +243,7 @@ def _initialize_gemini(main_window):
              return False 
 
     if not model_name:
-         print(f"Gemini initialization check: No model selected (value: {model_name}).")
+         logger.warning(f"Gemini initialization check: No model selected (value: {model_name}).")
 
          ai.no_ai = True 
          main_window._update_ui_state()
@@ -248,25 +251,25 @@ def _initialize_gemini(main_window):
          return False 
 
     try:
-        print(f"Initializing Gemini with model: {model_name}")
+        logger.info(f"Initializing Gemini with model: {model_name}")
         config_success = ai.configure_gemini(model_name) 
 
         if not config_success:
 
             main_window.statusBar().showMessage(f"Gemini initialization error ({model_name}). Check key/console.", 6000)
 
-            print(f"--- _initialize_gemini returning False because configure_gemini failed for model {model_name} ---")
+            logger.error(f"_initialize_gemini returning False because configure_gemini failed for model {model_name}")
             return False 
         else:
 
             main_window.statusBar().showMessage(f"Gemini ({model_name}) initialized.", 3000)
-            print(f"--- _initialize_gemini returning True for model {model_name} ---")
+            logger.info(f"_initialize_gemini returning True for model {model_name}")
 
             return True 
 
     except Exception as e:
 
-        print(f"CRITICAL ERROR during Gemini initialization: {e}")
+        logger.critical(f"CRITICAL ERROR during Gemini initialization: {e}")
         QMessageBox.critical(main_window, "Critical AI Error",
                            f"Unexpected error during Gemini initialization:\n{e}")
         ai.no_ai = True

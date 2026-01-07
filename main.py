@@ -2,28 +2,28 @@ import sys
 import os
 import argparse
 
+from renforge_logger import get_logger
+logger = get_logger("main")
+
 if getattr(sys, 'frozen', False):
     application_path = os.path.dirname(sys.executable)
     sys.path.insert(0, application_path)
-    print(f"Running from bundle. Added to sys.path: {application_path}")
+    logger.debug(f"Running from bundle. Added to sys.path: {application_path}")
 elif __file__:
     application_path = os.path.dirname(__file__)
     if application_path not in sys.path:
         sys.path.insert(0, application_path)
-    print(f"Running from script. Added to sys.path: {application_path}")
+    logger.debug(f"Running from script. Added to sys.path: {application_path}")
 
-print("Current sys.path:")
-
-for p in sys.path:
-    print(f"  - {p}")
+logger.debug("Current sys.path: " + ", ".join(sys.path[:3]) + "...")
 
 try:
     from PyQt6.QtWidgets import QApplication, QMessageBox
     from PyQt6.QtCore import QTimer
     GUI_AVAILABLE = True
 except ImportError:
-    print("CRITICAL ERROR: PyQt6 is required to run RenForge but is not installed.")
-    print("Please install it: pip install PyQt6")
+    logger.critical("PyQt6 is required to run RenForge but is not installed.")
+    logger.critical("Please install it: pip install PyQt6")
     sys.exit(1) 
 
 try:
@@ -32,13 +32,13 @@ try:
     import locales
     from gui.renforge_gui import RenForgeGUI
 except ImportError as e:
-    print(f"CRITICAL ERROR: Failed to import RenForge modules: {e}")
+    logger.critical(f"Failed to import RenForge modules: {e}")
     try:
         if QApplication.instance():
             QMessageBox.critical(None, "Module Import Error",
                                 f"Failed to import RenForge modules:\n{e}\n\n")
     except Exception as msg_e:
-         print(f"Could not show GUI error message: {msg_e}")
+         logger.error(f"Could not show GUI error message: {msg_e}")
     sys.exit(1)
 
 def main():
@@ -74,7 +74,7 @@ def main():
     initial_settings = load_settings()
     ui_lang = initial_settings.get("ui_language", config.DEFAULT_UI_LANGUAGE)
     locales.set_language(ui_lang)
-    print(f"UI language initialized: {ui_lang}")
+    logger.info(f"UI language initialized: {ui_lang}")
     
     app = QApplication(sys.argv)
     window = RenForgeGUI()
@@ -93,18 +93,18 @@ def main():
     window.model_combo.blockSignals(True)
     
     if window.model_combo.findText(window.selected_model) == -1:
-         print(f"Warning: Initial model '{window.selected_model}' not in default list, adding temporarily.")
+         logger.warning(f"Initial model '{window.selected_model}' not in default list, adding temporarily.")
          window.model_combo.insertItem(0, window.selected_model)
     window.model_combo.setCurrentText(window.selected_model)
     window.model_combo.blockSignals(False)
 
     window.show()
-    print("RenForge GUI started.")
+    logger.info("RenForge GUI started.")
 
     if args.input_file:
         input_path = os.path.abspath(args.input_file) 
         if os.path.exists(input_path) and os.path.isfile(input_path):
-            print(f"Scheduling lazy loading for: {input_path}")
+            logger.debug(f"Scheduling lazy loading for: {input_path}")
             
             initial_mode = "direct"
             file_name = os.path.basename(input_path)
@@ -115,13 +115,13 @@ def main():
             QTimer.singleShot(0, lambda f=input_path, m=initial_mode: window._load_file(f, m))
         else:
             warning_message = f"The file specified at startup was not found or is not a file:\n{input_path}"
-            print(f"Warning: {warning_message}")
+            logger.warning(warning_message)
             QTimer.singleShot(100, lambda msg=warning_message: QMessageBox.warning(window, "File Not Found", msg))
     
     exit_code = app.exec()
-    print(f"RenForge GUI finished with exit code {exit_code}.")
+    logger.info(f"RenForge GUI finished with exit code {exit_code}.")
     sys.exit(exit_code)
 
 if __name__ == "__main__":
-    print("Starting RenForge...")
+    logger.info("Starting RenForge...")
     main()

@@ -2,26 +2,32 @@ import os
 import sys
 import time
 
+from renforge_logger import get_logger
+logger = get_logger("gui.file_manager")
+
 try:
 
     from PyQt6.QtWidgets import QFileDialog, QMessageBox, QApplication
     from PyQt6.QtCore import Qt
 except ImportError:
 
-    print("CRITICAL ERROR: PyQt6 is required for file operations but not found.")
+    logger.critical("PyQt6 is required for file operations but not found.")
 
     sys.exit(1)
 
 try:
     from utils import project_utils 
 except ImportError:
-    print("ERROR: utils.project_utils modülü yüklenemedi. Proje hazırlama özellikleri kullanılamayacak.")
+    logger.error("utils.project_utils modülü yüklenemedi. Proje hazırlama özellikleri kullanılamayacak.")
     project_utils = None 
 
 import renforge_config as config
 import renforge_core as core
 import renforge_ai as ai
+from renforge_exceptions import SaveError
 from locales import tr
+from renforge_models import TabData, ParsedItem
+from renforge_enums import FileMode, ContextType, ItemType
 
 from gui.renforge_gui_dialog import ModeSelectionDialog
 import gui.gui_tab_manager as tab_manager
@@ -52,7 +58,7 @@ def open_project_dialog(main_window):
                 main_window.statusBar().showMessage(tr("project_opening_cancelled"), 3000)
                 return
 
-        print(f"Project folder selected: {project_path}")
+        logger.debug(f"Project folder selected: {project_path}")
         main_window.last_open_project_directory = project_path 
 
         prep_results = None
@@ -66,14 +72,14 @@ def open_project_dialog(main_window):
                  try:
                       prep_results = project_utils.prepare_project_files(project_path, current_settings) 
                  except Exception as e:
-                      print(f"CRITICAL: Exception during prepare_project_files call: {e}")
+                      logger.critical(f"Exception during prepare_project_files call: {e}")
                       QMessageBox.critical(main_window, "Project Preparation Error",
                                            f"An unexpected error occurred while preparing project files:\n{e}")
                       prep_results = {"error": str(e)}
 
                  end_time = time.time()
                  duration = end_time - start_time
-                 print(f"File preparation took {duration:.2f} seconds.")
+                 logger.debug(f"File preparation took {duration:.2f} seconds.")
 
             if prep_results and "error" not in prep_results and not prep_results.get("preparation_skipped_by_setting"):
                  summary_lines = [f"File preparation finished ({duration:.1f}s):"]
@@ -116,10 +122,10 @@ def open_project_dialog(main_window):
             else:
 
                 main_window.statusBar().showMessage(tr("auto_prep_disabled"), 4000)
-                print("INFO: Call to project_utils.prepare_project_files skipped due to settings.")
+                logger.info("Call to project_utils.prepare_project_files skipped due to settings.")
 
         else:
-             print("WARNING: Module project_utils not loaded, skipping project file preparation.")
+             logger.warning("Module project_utils not loaded, skipping project file preparation.")
 
         main_window._populate_project_tree(project_path)
         main_window.statusBar().showMessage(tr("project_opened", name=os.path.basename(project_path)), 5000)
@@ -186,9 +192,9 @@ def determine_file_mode(main_window, file_path):
 
     try:
         detected_mode = core.detect_file_mode(file_path)
-        print(f"Auto-detected mode for {os.path.basename(file_path)}: {detected_mode}")
+        logger.debug(f"Auto-detected mode for {os.path.basename(file_path)}: {detected_mode}")
     except Exception as detect_err:
-        print(f"Error detecting mode for {file_path}: {detect_err}")
+        logger.error(f"Error detecting mode for {file_path}: {detect_err}")
         QMessageBox.warning(main_window, "Mode Detection Error",
                             f"Could not automatically detect mode for file:\n{os.path.basename(file_path)}\n"
                             f"Error: {detect_err}\n\n"
@@ -203,9 +209,9 @@ def determine_file_mode(main_window, file_path):
         final_mode = detected_mode 
 
     if final_mode:
-        print(f"Selected mode for {os.path.basename(file_path)}: {final_mode}")
+        logger.debug(f"Selected mode for {os.path.basename(file_path)}: {final_mode}")
     else:
-        print(f"Mode selection cancelled for {os.path.basename(file_path)}")
+        logger.debug(f"Mode selection cancelled for {os.path.basename(file_path)}")
 
     return final_mode
 
@@ -229,16 +235,18 @@ def load_file(main_window, file_path, selected_mode):
         if selected_mode == "translate":
             items, lines, breakpoints, detected_lang_from_file = core.load_and_parse_translate_file(file_path)
             if detected_lang_from_file:
-                 print(f"  'translate' block language detected as: {detected_lang_from_file}")
+                 logger.debug(f"'translate' block language detected as: {detected_lang_from_file}")
                  final_target_lang = detected_lang_from_file
                  detected_code = lang_name_to_code_map.get(detected_lang_from_file.lower())
                  if detected_code:
                      final_target_lang = detected_code 
-                     print(f"  Mapped detected language to code: '{detected_code}'")
+                     logger.debug(f"Mapped detected language to code: '{detected_code}'")
                  else:
-                     print(f"  Warning: Could not map detected language '{detected_lang_from_file}' to a known language code. Using current default target.")
+                     # Allow custom language codes defined in Ren'Py
+                     final_target_lang = detected_lang_from_file
+                     logger.info(f"Using detected custom language code: '{detected_lang_from_file}'")
             else:
-                 print(f"  'translate' block language not detected, using current: {current_target_lang}")
+                 logger.debug(f"'translate' block language not detected, using current: {current_target_lang}")
                  final_target_lang = current_target_lang
         else: 
             items, lines, breakpoints = core.load_and_parse_direct_file(file_path)
@@ -247,27 +255,32 @@ def load_file(main_window, file_path, selected_mode):
         if lines is None or items is None or breakpoints is None:
             raise Exception(f"Core parsing function failed for '{base_name}'. See console.")
 
-        main_window.file_data[file_path] = {
-            'lines': lines,
-            'items': items,
-            'mode': selected_mode,
-            'target_language': final_target_lang, 
-            'source_language': current_source_lang, 
-            'selected_model': model_name,
-            'breakpoints': breakpoints,
-            'is_modified': False,
-            'table_widget': new_table,
-            'item_index': -1,
-            'output_path': file_path, 
-            'breakpoint_modified': False
-        }
+        # Create TabData object
+        tab_data = TabData(
+            file_path=file_path,
+            mode=FileMode(selected_mode),
+            lines=lines,
+            items=items,
+            breakpoints=breakpoints,
+            output_path=file_path,
+            target_language=final_target_lang,
+            source_language=current_source_lang,
+            selected_model=model_name
+        )
+        # Dynamically attach table_widget (GUI element) to data object
+        setattr(tab_data, 'table_widget', new_table)
+        # Python dataclasses allow dynamic attribute assignment if not frozen.
+        
+        tab_data.table_widget = new_table # Dynamic assignment for now, or I update the class.
+        
+        main_window.file_data[file_path] = tab_data
 
         table_manager.populate_table(new_table, items, selected_mode)
 
         tab_manager.add_new_tab(main_window, file_path, new_table, base_name)
 
         if not items:
-            print(f"Warning: No items found in file {base_name} (Mode: {selected_mode})")
+            logger.warning(f"No items found in file {base_name} (Mode: {selected_mode})")
             if selected_mode == "translate":
                 QMessageBox.warning(main_window, tr("warning_empty_translate_mode_title"), tr("warning_empty_translate_mode_msg"))
             else:
@@ -289,7 +302,7 @@ def load_file(main_window, file_path, selected_mode):
         for i in range(main_window.tab_widget.count()):
              widget = main_window.tab_widget.widget(i)
              if widget and widget.property("filePath") == file_path:
-                  print(f"Attempting to remove potentially failed tab for {file_path}")
+                  logger.debug(f"Attempting to remove potentially failed tab for {file_path}")
                   main_window.tab_widget.removeTab(i)
 
                   tab_manager.rebuild_tab_data(main_window)
@@ -305,17 +318,18 @@ def save_changes(main_window):
         main_window.statusBar().showMessage(tr("no_active_tab_save"), 3000)
         return False
 
-    file_path_to_save = current_data.get('output_path')
+    # current_data is now TabData object
+    file_path_to_save = current_data.output_path
     if not file_path_to_save:
 
         QMessageBox.warning(main_window, "Save Error", "Could not determine save path. Try 'Save As...'.")
         return save_file_dialog(main_window) 
 
-    current_file_lines = current_data.get('lines')
-    current_items_list = current_data.get('items')
-    current_breakpoints = current_data.get('breakpoints')
-    current_table = current_data.get('table_widget')
-    current_mode = current_data.get('mode')
+    current_file_lines = current_data.lines
+    current_items_list = current_data.items
+    current_breakpoints = current_data.breakpoints
+    current_table = getattr(current_data, 'table_widget', None) # Safely get dynamically added attr
+    current_mode = current_data.mode
 
     if current_file_lines is None or current_items_list is None or current_breakpoints is None or current_mode is None:
         QMessageBox.critical(main_window, "Data Error", "Internal error: missing data for saving the file.")
@@ -328,35 +342,39 @@ def save_changes(main_window):
         QApplication.processEvents()
 
         if current_mode == "translate":
-            success = core.save_translate_file(file_path_to_save, current_file_lines, current_breakpoints)
+            core.save_translate_file(file_path_to_save, current_file_lines, current_breakpoints)
         else: 
-            success = core.save_direct_file(file_path_to_save, current_items_list, current_file_lines, current_breakpoints)
+            core.save_direct_file(file_path_to_save, current_items_list, current_file_lines, current_breakpoints)
 
-        if success:
+        # If we reached here, save was successful (otherwise SaveError would be raised)
 
-            current_data['is_modified'] = False
-            current_data['breakpoint_modified'] = False
-            text_key = 'translated_text' if current_mode == "translate" else 'current_text'
-            for item in current_items_list:
-                item['is_modified_session'] = False
+        current_data.is_modified = False
+        
+        # text_key logic
+        for item in current_items_list:
+            item.is_modified_session = False
+            item.initial_text = item.current_text
 
-                item['initial_text'] = item.get(text_key)
+        if current_table:
+                table_manager.update_all_row_styles(current_table, current_items_list) 
 
-            if current_table:
-                 table_manager.update_all_row_styles(current_table, current_items_list) 
+        main_window._set_current_tab_modified(False) 
 
-            main_window._set_current_tab_modified(False) 
+        main_window.statusBar().showMessage(tr("file_saved", path=file_path_to_save), 5000)
+        return True
 
-            main_window.statusBar().showMessage(tr("file_saved", path=file_path_to_save), 5000)
-            return True
-        else:
-
-            raise Exception("File saving function returned an error.")
+    except SaveError as e:
+        logger.error(f"SaveError for {base_name}: {e}")
+        main_window.statusBar().showMessage(f"Error saving {base_name}: {e.message}", 10000)
+        QMessageBox.critical(main_window, "Save Error",
+                            f"Failed to save file:\n{file_path_to_save}\n\nError: {e.message}")
+        return False
 
     except Exception as e:
-        main_window.statusBar().showMessage(f"Error saving {base_name}: {e}", 10000)
+        logger.error(f"Unexpected error saving {base_name}: {e}")
+        main_window.statusBar().showMessage(f"Unexpected error saving {base_name}: {e}", 10000)
         QMessageBox.critical(main_window, "Save Error",
-                           f"Failed to save file:\n{file_path_to_save}\n\nError: {e}")
+                            f"Failed to save file (Unexpected):\n{file_path_to_save}\n\nError: {e}")
         return False
 
 def save_file_dialog(main_window):
@@ -365,7 +383,7 @@ def save_file_dialog(main_window):
         main_window.statusBar().showMessage("No active tab for 'Save As...'.", 3000)
         return False
 
-    start_path = current_data.get('output_path', main_window.current_file_path or os.getcwd())
+    start_path = current_data.output_path or main_window.current_file_path or os.getcwd()
     start_dir = os.path.dirname(start_path)
     start_name = os.path.basename(start_path)
 
@@ -376,7 +394,7 @@ def save_file_dialog(main_window):
         main_window.statusBar().showMessage("Saving cancelled.", 3000)
         return False
 
-    current_data['output_path'] = file_path
+    current_data.output_path = file_path
 
     return save_changes(main_window)
 
@@ -389,9 +407,11 @@ def save_all_files(main_window):
     indices_to_save = []
     for i in range(main_window.tab_widget.count()):
         file_path = main_window.tab_data.get(i)
-        if file_path and main_window.file_data.get(file_path, {}).get('is_modified', False):
-             indices_to_save.append(i)
-             modified_files_found = True
+        if file_path:
+             data = main_window.file_data.get(file_path)
+             if data and data.is_modified:
+                 indices_to_save.append(i)
+                 modified_files_found = True
 
     if not modified_files_found:
 
@@ -408,7 +428,7 @@ def save_all_files(main_window):
 
         file_path_to_save = main_window.tab_data.get(i)
         if not file_path_to_save: 
-            print(f"Error: Could not get file path for tab index {i} during Save All.")
+            logger.error(f"Could not get file path for tab index {i} during Save All.")
             failed_files.append(f"(Sekme {i} için yol hatası)")
             saved_successfully = False
             continue
@@ -416,7 +436,8 @@ def save_all_files(main_window):
         if not save_changes(main_window): 
             saved_successfully = False
 
-            failed_name = os.path.basename(main_window.file_data.get(file_path_to_save, {}).get('output_path', file_path_to_save))
+            data = main_window.file_data.get(file_path_to_save)
+            failed_name = os.path.basename(data.output_path if data else file_path_to_save)
             failed_files.append(failed_name)
 
     if 0 <= current_tab_index < main_window.tab_widget.count():
