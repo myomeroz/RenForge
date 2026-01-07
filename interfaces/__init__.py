@@ -13,8 +13,11 @@ from interfaces.i_view import (
     ITableView,
 )
 from interfaces.i_controller import (
+    IAppController,
     IFileController,
     ITranslationController,
+    IBatchController,
+    IProjectController,
 )
 from interfaces.di_container import DIContainer
 
@@ -22,7 +25,10 @@ __all__ = [
     'IMainView',
     'IDialogView',
     'ITableView',
+    'IAppController',
     'IFileController',
     'ITranslationController',
+    'IBatchController',
+    'IProjectController',
     'DIContainer',
 ]

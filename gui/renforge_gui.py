@@ -34,8 +34,8 @@ try:
                                        ModeSelectionDialog, InsertLineDialog, SettingsDialog)
     from gui.renforge_gui_styles import DARK_STYLE_SHEET
     from gui.ui_builder import UIBuilder
-    from gui.controllers.project_controller import ProjectController
-    from gui.controllers.batch_controller import BatchController
+    # NOTE: ProjectController and BatchController are now imported and instantiated
+    # in app_bootstrap.py via DI container, not directly here.
 
     import gui.gui_file_manager as file_manager
     import gui.gui_tab_manager as tab_manager
@@ -58,6 +58,39 @@ except ImportError as e:
 SUPPORTED_LANGUAGES = {}
 
 class RenForgeGUI(QMainWindow):
+    """
+    Main application window - implements IMainView protocol.
+    
+    Emits signals for user actions, receives updates from controllers.
+    """
+    
+    # =========================================================================
+    # IMainView PROTOCOL SIGNALS
+    # =========================================================================
+    
+    # File operations
+    open_project_requested = pyqtSignal()
+    open_file_requested = pyqtSignal()
+    save_requested = pyqtSignal()
+    save_all_requested = pyqtSignal()
+    close_tab_requested = pyqtSignal(int)  # tab index
+    exit_requested = pyqtSignal()
+    
+    # Navigation
+    tab_changed = pyqtSignal(int)  # tab index
+    item_selected = pyqtSignal(int)  # item index
+    
+    # Translation
+    translate_google_requested = pyqtSignal()
+    translate_ai_requested = pyqtSignal()
+    batch_google_requested = pyqtSignal()
+    batch_ai_requested = pyqtSignal()
+    
+    # Settings
+    target_language_changed = pyqtSignal(str)  # language code
+    source_language_changed = pyqtSignal(str)  # language code
+    model_changed = pyqtSignal(str)  # model name
+
 
     def __init__(self):
         super().__init__()
@@ -85,6 +118,9 @@ class RenForgeGUI(QMainWindow):
         # Note: _batch_errors, _batch_warnings etc. are now managed by BatchController
         # and exposed as @property for backward compatibility
 
+        # Phase 4: Controller reference (set by bootstrap)
+        self._app_controller = None
+
         self.SUPPORTED_LANGUAGES = {} 
 
         settings_manager.load_initial_settings(self)
@@ -107,11 +143,11 @@ class RenForgeGUI(QMainWindow):
         ui_builder.assemble_layout()
         ui_builder.build_menu_bar()
         
-        # Initialize ProjectController for project tree management
-        self.project_controller = ProjectController(self)
-        
-        # Initialize BatchController for batch translation operations
-        self.batch_controller = BatchController(self)
+        # NOTE: ProjectController and BatchController are now created and assigned
+        # by app_bootstrap.py via DI container. These attributes will be set there.
+        # Initialize as None for early access safety before bootstrap completes.
+        self.project_controller = None
+        self.batch_controller = None
         
         self.setStyleSheet(DARK_STYLE_SHEET)
         self._update_ui_state() 

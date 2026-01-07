@@ -1,3 +1,17 @@
+# -*- coding: utf-8 -*-
+"""
+RenForge GUI File Manager
+
+DEPRECATED: This module contains legacy file management functions.
+File operations are being migrated to controllers.FileController.
+This module is kept for backward compatibility during the migration period.
+
+For new code, use:
+    from controllers import FileController
+    controller.open_file(path, mode)
+    controller.save_file()
+"""
+
 import os
 import sys
 import time

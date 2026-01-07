@@ -30,7 +30,7 @@ try:
     import renforge_config as config
     from renforge_settings import load_settings
     import locales
-    from gui.renforge_gui import RenForgeGUI
+    from app_bootstrap import bootstrap
 except ImportError as e:
     logger.critical(f"Failed to import RenForge modules: {e}")
     try:
@@ -77,7 +77,10 @@ def main():
     logger.info(f"UI language initialized: {ui_lang}")
     
     app = QApplication(sys.argv)
-    window = RenForgeGUI()
+    
+    # Phase 4: Use bootstrap to create controller and view with DI
+    controller, window = bootstrap()
+    logger.info("Bootstrap complete. Controller and View created.")
 
     window.target_language = args.lang
     window.source_language = args.source_lang
@@ -112,7 +115,16 @@ def main():
             lang_suffixes = ["_ren.rpy", "_eng.rpy", "_chs.rpy", "_rus.rpy", "_es.rpy", "_pt.rpy", "_ja.rpy", "_ko.rpy", "_de.rpy", "_fr.rpy"] 
             if any(file_name.endswith(suffix) for suffix in lang_suffixes):
                 initial_mode = "translate"
-            QTimer.singleShot(0, lambda f=input_path, m=initial_mode: window._load_file(f, m))
+            
+            # Phase 4 COMPLETE: Route file opening through controller only
+            # UI update happens automatically via file_opened signal -> _on_file_opened_from_controller
+            def open_startup_file(path, mode):
+                logger.info(f"Opening startup file via controller: {path} (mode={mode})")
+                controller.open_file(path, mode)
+                # NOTE: UI update is now handled by file_opened signal in app_bootstrap.py
+                # Legacy path (window._load_file) is no longer needed
+            
+            QTimer.singleShot(0, lambda f=input_path, m=initial_mode: open_startup_file(f, m))
         else:
             warning_message = f"The file specified at startup was not found or is not a file:\n{input_path}"
             logger.warning(warning_message)

@@ -173,3 +173,80 @@ class IAppController(Protocol):
     def shutdown(self) -> bool:
         """Prepare for application shutdown."""
         ...
+
+
+@runtime_checkable
+class IBatchController(Protocol):
+    """
+    Protocol for batch translation controller.
+    
+    Defines the interface for batch translation operations.
+    """
+    
+    # Properties
+    @property
+    def errors(self) -> List[str]:
+        """Get list of errors from batch operation."""
+        ...
+    
+    @property
+    def warnings(self) -> List[str]:
+        """Get list of warnings from batch operation."""
+        ...
+    
+    # Methods
+    def clear_results(self) -> None:
+        """Clear all batch result tracking data."""
+        ...
+    
+    def handle_item_updated(
+        self, 
+        item_index: int, 
+        translated_text: str, 
+        updated_item_data: Dict[str, Any]
+    ) -> None:
+        """Handle batch item update signal from worker."""
+        ...
+    
+    def handle_error(self, details: str) -> None:
+        """Handle batch translation error signal."""
+        ...
+    
+    def handle_warning(self, details: str) -> None:
+        """Handle batch translation warning signal."""
+        ...
+    
+    def handle_finished(self, results: Dict[str, Any]) -> None:
+        """Handle batch translation finished signal."""
+        ...
+
+
+@runtime_checkable
+class IProjectController(Protocol):
+    """
+    Protocol for project controller.
+    
+    Defines the interface for project tree and panel management.
+    """
+    
+    # Methods
+    def handle_open_project(self) -> None:
+        """Open project folder dialog."""
+        ...
+    
+    def populate_project_tree(self, project_path: str) -> None:
+        """Populate the project tree view with files."""
+        ...
+    
+    def handle_tree_item_activated(self, index: Any) -> None:
+        """Handle activation of a tree view item."""
+        ...
+    
+    def handle_activity_bar_toggle(self, checked: bool) -> None:
+        """Handle toggle of activity bar buttons."""
+        ...
+    
+    def set_left_panel_visibility(self, visible: bool) -> None:
+        """Set the visibility of the left panel container."""
+        ...
+

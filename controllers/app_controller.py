@@ -46,17 +46,38 @@ class AppController(QObject):
     languages_loaded = pyqtSignal(dict)
     status_updated = pyqtSignal(str)
     
-    def __init__(self):
-        """Initialize the application controller."""
+    def __init__(
+        self,
+        file_controller: Optional[FileController] = None,
+        translation_controller: Optional[TranslationController] = None,
+        settings: Optional[SettingsModel] = None,
+        project: Optional[ProjectModel] = None
+    ):
+        """
+        Initialize the application controller.
+        
+        Args:
+            file_controller: Injected file controller (DI)
+            translation_controller: Injected translation controller (DI)
+            settings: Injected settings model (DI)
+            project: Injected project model (DI)
+            
+        If no arguments provided, falls back to creating instances internally
+        for backward compatibility during migration.
+        """
         super().__init__()
         
-        # Initialize models
-        self._settings = SettingsModel.instance()
-        self._project = ProjectModel()
+        # Use injected dependencies or create internally (backward compat)
+        self._settings = settings or SettingsModel.instance()
+        self._project = project or ProjectModel()
         
-        # Initialize sub-controllers
-        self._file_controller = FileController(self._project, self._settings)
-        self._translation_controller = TranslationController(self._settings)
+        # Use injected controllers or create internally (backward compat)
+        self._file_controller = file_controller or FileController(
+            self._project, self._settings
+        )
+        self._translation_controller = translation_controller or TranslationController(
+            self._settings
+        )
         
         # Connect sub-controller signals
         self._connect_signals()

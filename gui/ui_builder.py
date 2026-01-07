@@ -255,22 +255,25 @@ class UIBuilder:
         row1 = QHBoxLayout()
         row1.setSpacing(4)
         
+        # AI Edit button - ONLY emit signal, handler in app_bootstrap
         self.main.ai_edit_btn = QPushButton(tr("btn_ai"))
         self.main.ai_edit_btn.setIcon(QIcon(config.resource_path("pics/ai.svg")))
         self.main.ai_edit_btn.setToolTip("Edit selected line with Gemini")
-        self.main.ai_edit_btn.clicked.connect(lambda: action_handler.edit_with_ai(self.main))
+        self.main.ai_edit_btn.clicked.connect(lambda: self.main.translate_ai_requested.emit())
         row1.addWidget(self.main.ai_edit_btn)
         
+        # Google Translate button - ONLY emit signal, handler in app_bootstrap
         self.main.gt_translate_btn = QPushButton(tr("btn_gtranslate"))
         self.main.gt_translate_btn.setIcon(QIcon(config.resource_path("pics/gt.svg")))
         self.main.gt_translate_btn.setToolTip("Translate with Google Translate")
-        self.main.gt_translate_btn.clicked.connect(lambda: action_handler.translate_with_google(self.main))
+        self.main.gt_translate_btn.clicked.connect(lambda: self.main.translate_google_requested.emit())
         row1.addWidget(self.main.gt_translate_btn)
         
+        # Batch Google Translate button - ONLY emit signal, handler in app_bootstrap
         self.main.batch_gt_btn = QPushButton(tr("btn_batch_gtranslate"))
         self.main.batch_gt_btn.setIcon(QIcon(config.resource_path("pics/batch.svg")))
         self.main.batch_gt_btn.setToolTip("Batch translate selected lines")
-        self.main.batch_gt_btn.clicked.connect(lambda: action_handler.batch_translate_google(self.main))
+        self.main.batch_gt_btn.clicked.connect(lambda: self.main.batch_google_requested.emit())
         row1.addWidget(self.main.batch_gt_btn)
         
         self.main.revert_btn = QPushButton(tr("btn_revert"))
@@ -377,47 +380,64 @@ class UIBuilder:
         """Build the application menu bar."""
         menu_bar = self.main.menuBar()
         
-        # File menu
+        # =================================================================
+        # FILE MENU - with signal emission for MVC architecture
+        # =================================================================
         file_menu = menu_bar.addMenu(tr("menu_file"))
         
+        # Open Project - ONLY emit signal, handler in app_bootstrap
         open_project = file_menu.addAction(tr("menu_open_project"))
-        open_project.triggered.connect(self.main._handle_open_project)
+        open_project.triggered.connect(lambda: self.main.open_project_requested.emit())
         self.main.open_project_action = open_project
         
+        # Open File - ONLY emit signal, handler in app_bootstrap
         open_file = file_menu.addAction(tr("menu_open_file"))
         open_file.setShortcut("Ctrl+O")
-        open_file.triggered.connect(lambda: file_manager.open_file_dialog(self.main))
+        open_file.triggered.connect(lambda: self.main.open_file_requested.emit())
         
         file_menu.addSeparator()
         
+        # Save - ONLY emit signal, controller handles the rest
         save = file_menu.addAction(tr("menu_save"))
         save.setShortcut("Ctrl+S")
-        save.triggered.connect(lambda: file_manager.save_changes(self.main))
+        save.triggered.connect(lambda: self.main.save_requested.emit())
         self.main.save_action = save
         
+        # Save As
         save_as = file_menu.addAction(tr("menu_save_as"))
         save_as.triggered.connect(lambda: file_manager.save_file_dialog(self.main))
         self.main.save_as_action = save_as
         
+        # Save All - ONLY emit signal, controller handles the rest
         save_all = file_menu.addAction(tr("menu_save_all"))
         save_all.setShortcut("Ctrl+Shift+S")
-        save_all.triggered.connect(lambda: file_manager.save_all_files(self.main))
+        save_all.triggered.connect(lambda: self.main.save_all_requested.emit())
         self.main.save_all_action = save_all
         
         file_menu.addSeparator()
         
+        # Close Tab - ONLY emit signal, controller handles the rest
         close_tab = file_menu.addAction(tr("menu_close_tab"))
         close_tab.setShortcut("Ctrl+W")
-        close_tab.triggered.connect(lambda: tab_manager.close_current_tab(self.main))
+        def on_close_tab():
+            idx = self.main.tab_widget.currentIndex()
+            self.main.close_tab_requested.emit(idx)
+        close_tab.triggered.connect(on_close_tab)
         self.main.close_tab_action = close_tab
         
         file_menu.addSeparator()
         
+        # Exit
         exit_action = file_menu.addAction(tr("menu_exit"))
         exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.main.close)
+        def on_exit():
+            self.main.exit_requested.emit()  # Signal for controllers
+            self.main.close()  # Actual close
+        exit_action.triggered.connect(on_exit)
         
-        # Edit menu
+        # =================================================================
+        # EDIT MENU - with signal emission for MVC architecture
+        # =================================================================
         edit_menu = menu_bar.addMenu(tr("menu_edit"))
         
         revert = edit_menu.addAction(tr("menu_revert_item"))
@@ -425,12 +445,14 @@ class UIBuilder:
         revert.triggered.connect(lambda: table_manager.revert_single_item_menu(self.main))
         self.main.revert_action_menu = revert
         
+        # AI Edit - ONLY emit signal, handler in app_bootstrap
         ai_edit = edit_menu.addAction(tr("menu_edit_ai"))
-        ai_edit.triggered.connect(lambda: action_handler.edit_with_ai(self.main))
+        ai_edit.triggered.connect(lambda: self.main.translate_ai_requested.emit())
         self.main.ai_edit_action_menu = ai_edit
         
+        # Google Translate - ONLY emit signal, handler in app_bootstrap
         gt = edit_menu.addAction(tr("menu_translate_google"))
-        gt.triggered.connect(lambda: action_handler.translate_with_google(self.main))
+        gt.triggered.connect(lambda: self.main.translate_google_requested.emit())
         self.main.gt_action_menu = gt
         
         # Navigation menu
