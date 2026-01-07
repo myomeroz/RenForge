@@ -73,6 +73,7 @@ class RenForgeGUI(QMainWindow):
     open_file_requested = pyqtSignal()
     save_requested = pyqtSignal()
     save_all_requested = pyqtSignal()
+    file_loaded = pyqtSignal(str)  # file path (for legacy sync)
     close_tab_requested = pyqtSignal(int)  # tab index
     exit_requested = pyqtSignal()
     

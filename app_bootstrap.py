@@ -233,6 +233,12 @@ def _wire_view_to_controller_signals(view: 'RenForgeGUI', controller: AppControl
     )
     logger.debug("    - open_project_requested -> _handle_open_project")
     
+    # File Loaded - sync legacy load with new architecture
+    view.file_loaded.connect(
+        lambda path: _handle_file_loaded_legacy(controller, view, path)
+    )
+    logger.debug("    - file_loaded -> _handle_file_loaded_legacy")
+    
     # =========================================================================
     # TRANSLATION OPERATIONS
     # =========================================================================
@@ -521,3 +527,80 @@ def _handle_batch_google(view: 'RenForgeGUI'):
     import gui.gui_action_handler as action_handler
     logger.debug("_handle_batch_google called via signal")
     action_handler.batch_translate_google(view)
+
+
+def _handle_file_loaded_legacy(controller: 'AppController', view: 'RenForgeGUI', file_path: str):
+    """
+    Handle legacy file load event to sync with new architecture.
+    Converts TabData to ParsedFile and updates ProjectModel.
+    """
+    try:
+        from models.parsed_file import ParsedFile, ParsedItem
+        from renforge_enums import FileMode, ItemType
+        
+        logger.debug(f"Syncing legacy file load for: {file_path}")
+        
+        if file_path not in view.file_data:
+            logger.warning(f"File loaded but not found in view.file_data: {file_path}")
+            return
+
+        tab_data = view.file_data[file_path]
+        
+        # Convert legacy TabData/dict items to ParsedItem list
+        parsed_items = []
+        if tab_data.items:
+            for item in tab_data.items:
+                # Handle both object and dict item formats (legacy mixed usage)
+                if isinstance(item, dict):
+                    parsed_item = ParsedItem(
+                        line_index=item.get('line_index', -1),
+                        original_text=item.get('original_text', ''),
+                        current_text=item.get('current_text', ''),
+                        initial_text=item.get('initial_text', ''),
+                        type=item.get('type', ItemType.UNKNOWN),
+                        parsed_data=item.get('parsed_data', {}),
+                        context=item.get('context', None),
+                        original_line_index=item.get('original_line_index'),
+                        character_trans=item.get('character_trans'),
+                        block_language=item.get('block_language')
+                    )
+                else:
+                    # Assume it's already a compatible object or has compatible attributes
+                    # If it's the old renforge_models.ParsedItem, it likely has compatible fields
+                    # but check anyway.
+                    parsed_item = ParsedItem(
+                        line_index=getattr(item, 'line_index', -1),
+                        original_text=getattr(item, 'original_text', ''),
+                        current_text=getattr(item, 'current_text', ''),
+                        initial_text=getattr(item, 'initial_text', ''),
+                        type=getattr(item, 'type', ItemType.UNKNOWN),
+                        parsed_data=getattr(item, 'parsed_data', {}),
+                        context=getattr(item, 'context', None),
+                        original_line_index=getattr(item, 'original_line_index', None),
+                        character_trans=getattr(item, 'character_trans', None),
+                        block_language=getattr(item, 'block_language', None)
+                    )
+                parsed_items.append(parsed_item)
+
+        # Create ParsedFile
+        parsed_file = ParsedFile(
+            file_path=file_path,
+            mode=tab_data.mode if hasattr(tab_data, 'mode') else FileMode.DIRECT, # Fallback
+            lines=tab_data.lines,
+            items=parsed_items,
+            breakpoints=tab_data.breakpoints,
+            output_path=getattr(tab_data, 'output_path', file_path),
+            target_language=getattr(tab_data, 'target_language', None),
+            source_language=getattr(tab_data, 'source_language', None),
+            selected_model=getattr(tab_data, 'selected_model', None)
+        )
+        
+        # Sync with ProjectModel
+        if controller.project.add_file(parsed_file):
+            logger.info(f"  [Sync] Added file to ProjectModel: {parsed_file.filename}")
+            controller.project.set_active_file(file_path)
+            
+    except Exception as e:
+        logger.error(f"Failed to sync legacy file load: {e}")
+        import traceback
+        traceback.print_exc()

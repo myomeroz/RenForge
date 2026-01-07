@@ -298,18 +298,24 @@ def load_file(main_window, file_path, selected_mode):
             if selected_mode == "translate":
                 QMessageBox.warning(main_window, tr("warning_empty_translate_mode_title"), tr("warning_empty_translate_mode_msg"))
             else:
-                 QMessageBox.warning(main_window, tr("warning_empty_direct_mode_title"), tr("warning_empty_direct_mode_msg"))
+                QMessageBox.warning(main_window, "Empty File", f"No items found in '{base_name}' with mode '{selected_mode}'.")
         
+        # Notify new architecture (Phase 5 Sync)
+        if hasattr(main_window, 'file_loaded'):
+            main_window.file_loaded.emit(file_path)
+
         item_count = len(items)
         main_window.statusBar().showMessage(tr("file_loaded", name=base_name, count=item_count, mode=selected_mode), 5000)
 
         return True
 
     except Exception as e:
-        main_window.statusBar().showMessage(f"Error loading {os.path.basename(file_path)}: {e}", 10000)
-        QMessageBox.critical(main_window, "Loading Error",
-                           f"Failed to load file:\n{file_path}\n\nError: {e}")
-
+        logger.error(f"Error loading file {file_path}: {e}")
+        import traceback
+        traceback.print_exc()
+        QMessageBox.critical(main_window, "Load Error", f"Failed to load file:\n{file_path}\n\nError: {e}")
+        
+        # Original cleanup logic from the old except block
         if file_path in main_window.file_data:
             del main_window.file_data[file_path]
 
