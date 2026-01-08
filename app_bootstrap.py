@@ -661,28 +661,36 @@ def _handle_batch_ai(view: 'RenForgeGUI'):
                     target_lang = getattr(config, 'TARGET_LANGUAGE', 'turkish')
                     source_lang = getattr(config, 'SOURCE_LANGUAGE', 'english')
                     
-                    # Use the correct AI translation function
-                    translated = ai.refine_text_with_gemini_translate(
+                    # Use the correct AI translation function (returns tuple: result, error)
+                    result = ai.refine_text_with_gemini_translate(
                         original_text=text,
                         current_translation="",  # Empty for new translation
                         user_instruction="Translate this text accurately while preserving formatting tags",
-                        context_info="",
+                        context_info=[],
                         source_lang=source_lang,
                         target_lang=target_lang,
                         character_tag=getattr(item, 'character_tag', None)
                     )
                     
+                    # Unpack tuple result (translated_text, error_message)
+                    if isinstance(result, tuple):
+                        translated, error_msg = result
+                    else:
+                        translated = result
+                        error_msg = None
+                    
                     if self._is_canceled:
                         results['canceled'] = True
                         break
                     
-                    if translated and translated.strip():
+                    if translated and str(translated).strip():
                         self.parsed_file.update_item_text(idx, translated)
                         self.signals.item_updated.emit(idx, translated)
                         results['success_count'] += 1
                     else:
                         results['error_count'] += 1
-                        results['errors'].append(f"Line {item.line_index}: Empty AI response")
+                        err_detail = error_msg if error_msg else "Empty AI response"
+                        results['errors'].append(f"Line {item.line_index}: {err_detail}")
                         
                 except Exception as e:
                     results['error_count'] += 1
