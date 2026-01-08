@@ -54,15 +54,15 @@ class BatchController(QObject):
     def warnings(self):
         return self._warnings
     
-    @pyqtSlot(int, str, dict)
-    def handle_item_updated(self, item_index: int, translated_text: str, updated_item_data_copy: dict):
+    @pyqtSlot(int, str)
+    def handle_item_updated(self, item_index: int, translated_text: str, updated_item_data_copy: dict = None):
         """
         Handle batch item update signal from worker.
         
         Args:
             item_index: Index of the item being updated
             translated_text: The translated text
-            updated_item_data_copy: Copy of item data from worker
+            updated_item_data_copy: Optional copy of item data (legacy/Google support)
         """
         current_file_data = self.main._get_current_file_data()
         if not current_file_data:
@@ -92,19 +92,20 @@ class BatchController(QObject):
         update_line_error = False
         if current_mode == 'translate':
             line_index_to_update = getattr(original_item_data, 'line_index', None)
-            parsed_data_from_signal = updated_item_data_copy.get('parsed_data')
             
             if line_index_to_update is not None and 0 <= line_index_to_update < len(current_lines):
-                if parsed_data_from_signal:
-                    new_line = parser.format_line_from_components(updated_item_data_copy, translated_text)
+                # Use original_item_data for reconstruction (it contains parsed_data)
+                # Parse logic expects ParsedItem or dict with 'parsed_data'
+                try:
+                    new_line = parser.format_line_from_components(original_item_data, translated_text)
                     if new_line is not None:
                         current_lines[line_index_to_update] = new_line
                     else:
                         update_line_error = True
                         logger.error(f"Failed to format line for file index {line_index_to_update}")
-                else:
+                except Exception as e:
                     update_line_error = True
-                    logger.error(f"Missing 'parsed_data' in data for item {item_index}")
+                    logger.error(f"Error formatting line: {e}")
             else:
                 update_line_error = True
                 logger.error(f"Invalid line index {line_index_to_update} for item {item_index}")
@@ -146,13 +147,37 @@ class BatchController(QObject):
         Args:
             results: Dict with keys: processed, total, success, errors, warnings, made_changes, canceled
         """
-        processed = results['processed']
-        total = results['total']
-        success = results['success']
-        errors = results['errors'] + len(self._errors)
-        warnings = results['warnings']
-        made_changes = results['made_changes']
-        canceled = results['canceled']
+        # Robust retrieval with fallbacks
+        processed = results.get('processed', results.get('total', 0))
+        total = results.get('total', processed)
+        
+        success = results.get('success', results.get('success_count', 0))
+        
+        # Handle errors (list vs count)
+        result_errors = results.get('errors', [])
+        if not isinstance(result_errors, list):
+             result_errors = []
+             
+        error_count_from_results = results.get('failed', results.get('error_count', len(result_errors)))
+        
+        # Combine with local errors
+        # Note: self._errors contains strings
+        all_errors = list(self._errors) + result_errors
+        total_error_count = len(all_errors)
+        # If error_count_from_results > len(result_errors), explicitly use that? 
+        # Usually they match. Let's trust the greater number or list length.
+        if error_count_from_results > total_error_count:
+             pass # Logic to handle unseen errors? Assuming list has all details.
+
+        warnings_list = results.get('warnings', [])
+        if not isinstance(warnings_list, list):
+             warnings_list = []
+        
+        all_warnings = list(self._warnings) + warnings_list
+        total_warning_count = len(all_warnings)
+
+        made_changes = results.get('made_changes', success > 0)
+        canceled = results.get('canceled', False)
         
         # Build summary message
         summary_msg = "Batch translation finished.\n\n"
@@ -161,18 +186,16 @@ class BatchController(QObject):
         summary_msg += f"Lines processed: {processed}/{total}\n"
         summary_msg += f"Successful (text updated): {success}\n"
         
-        if self._errors:
-            errors = len(self._errors)
-            summary_msg += f"\nTranslation/Update Errors: {errors}\n"
-            summary_msg += "\nError Details (max 10):\n" + "\n".join(self._errors[:10])
-            if len(self._errors) > 10:
+        if total_error_count > 0:
+            summary_msg += f"\nErrors: {total_error_count}\n"
+            summary_msg += "\nError Details (max 10):\n" + "\n".join(str(e) for e in all_errors[:10])
+            if total_error_count > 10:
                 summary_msg += "\n..."
         
-        if self._warnings:
-            warnings = len(self._warnings)
-            summary_msg += f"\nWarnings (variables '[...]'): {warnings}\n"
-            summary_msg += "\nDetails (max 10):\n" + "\n".join(self._warnings[:10])
-            if len(self._warnings) > 10:
+        if total_warning_count > 0:
+            summary_msg += f"\nWarnings (variables '[...]'): {total_warning_count}\n"
+            summary_msg += "\nDetails (max 10):\n" + "\n".join(str(w) for w in all_warnings[:10])
+            if total_warning_count > 10:
                 summary_msg += "\n..."
         
         QMessageBox.information(self.main, tr("batch_result_title"), summary_msg)
@@ -184,7 +207,7 @@ class BatchController(QObject):
         status_message = "Batch translation finished."
         if canceled:
             status_message = "Batch translation canceled."
-        elif errors > 0 or warnings > 0:
+        elif total_error_count > 0 or total_warning_count > 0:
             status_message += " Completed with errors/warnings."
         
         self.main.statusBar().showMessage(status_message, 5000)

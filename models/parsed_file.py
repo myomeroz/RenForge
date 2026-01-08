@@ -2,7 +2,7 @@
 """
 RenForge ParsedFile Model
 
-Extends TabData to provide a complete file model with:
+A complete file model with:
 - File operations (load, save)
 - Observer pattern for change notifications
 - Encapsulated business logic

@@ -140,9 +140,12 @@ class TranslateParser(BaseParser):
         # Handle dialogue line after comment (translated text)
         # Format:     character_id "text" or "text"
         if self._pending_original_from_comment is not None:
-            translated_text = self._extract_text_from_dialogue(line)
+            # Extract text AND character info
+            extraction_result = self._extract_data_from_dialogue(line)
             
-            if translated_text is not None:
+            if extraction_result:
+                translated_text, char_str = extraction_result
+                
                 item = self._create_item(
                     line_index=line_index,
                     original_text=self._pending_original_from_comment,
@@ -152,6 +155,7 @@ class TranslateParser(BaseParser):
                     parsed_data={
                         'indent': line[:len(line) - len(line.lstrip())],
                         'original_line': line,
+                        'character': char_str, # Store character tag
                         'comment_line_index': self._pending_comment_line,
                         'reconstruction_rule': 'translate_dialogue',
                     }
@@ -177,17 +181,34 @@ class TranslateParser(BaseParser):
         
         return None
     
-    def _extract_text_from_dialogue(self, line: str) -> Optional[str]:
-        """Extract quoted text from a dialogue line."""
+    def _extract_data_from_dialogue(self, line: str) -> Optional[Tuple[str, str]]:
+        """
+        Extract text and character from a dialogue line.
+        Returns: (text, character_string) or None
+        """
         # Try dialogue pattern
         match = RenpyPatterns.DIALOGUE.match(line)
         if match:
-            return match.group(5)
+            text = match.group(5)
+            # Reconstruct character string (char + modifiers)
+            char = match.group(2) or ""
+            mod = match.group(3) or ""
+            char_full = f"{char}{mod}".strip()
+            # If modifiers exist, add space if needed? 
+            # Actually group(3) usually includes leading space if pattern is correct?
+            # Let's rely on group 2 and 3.
+            # In parse_line: prefix = f'{character}{modifiers} '
+            # Here we just need 'character' key for format_line_from_components
+            if mod:
+                 char_full = f"{char}{mod}"
+            else:
+                 char_full = char
+            return text, char_full if char_full else ""
         
         # Try narration pattern
         match = RenpyPatterns.NARRATION.match(line)
         if match:
-            return match.group(2)
+            return match.group(2), ""
         
         return None
     

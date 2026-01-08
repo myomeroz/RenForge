@@ -36,8 +36,6 @@ except ImportError:
     project_utils = None 
 
 import renforge_config as config
-import renforge_core as core
-import renforge_ai as ai
 from renforge_exceptions import SaveError
 from locales import tr
 from models.parsed_file import ParsedFile, ParsedItem
@@ -203,9 +201,17 @@ def determine_file_mode(main_window, file_path):
     current_selection_method = main_window.settings.get("mode_selection_method", config.DEFAULT_MODE_SELECTION_METHOD)
     final_mode = None
     detected_mode = "direct" 
+    
+    controller = getattr(main_window, '_app_controller', None)
 
     try:
-        detected_mode = core.detect_file_mode(file_path)
+        if controller and controller.file_controller:
+            detected_mode = controller.file_controller.detect_file_mode(file_path) or "direct"
+        else:
+             # Fallback if controller not ready? Should not happen in new arch
+             logger.warning("Controller not available for mode detection.")
+             pass
+             
         logger.debug(f"Auto-detected mode for {os.path.basename(file_path)}: {detected_mode}")
     except Exception as detect_err:
         logger.error(f"Error detecting mode for {file_path}: {detect_err}")
@@ -235,102 +241,34 @@ def load_file(main_window, file_path, selected_mode):
         main_window.statusBar().showMessage(tr("loading_file", name=base_name, mode=selected_mode), 0)
         QApplication.processEvents()
 
-        new_table = table_manager.create_table_widget(main_window)
-        new_table.setProperty("filePath", file_path) 
-
-        items, lines, breakpoints, detected_lang_from_file = None, None, None, None
-        current_target_lang = main_window.target_lang_combo.currentData()
-        current_source_lang = main_window.source_lang_combo.currentData()
-        model_name = main_window.model_combo.currentText()
-
-        available_languages_map = main_window.SUPPORTED_LANGUAGES
-        lang_name_to_code_map = {name.lower(): code for code, name in available_languages_map.items()}
-
-        if selected_mode == "translate":
-            items, lines, breakpoints, detected_lang_from_file = core.load_and_parse_translate_file(file_path)
-            if detected_lang_from_file:
-                 logger.debug(f"'translate' block language detected as: {detected_lang_from_file}")
-                 final_target_lang = detected_lang_from_file
-                 detected_code = lang_name_to_code_map.get(detected_lang_from_file.lower())
-                 if detected_code:
-                     final_target_lang = detected_code 
-                     logger.debug(f"Mapped detected language to code: '{detected_code}'")
-                 else:
-                     # Allow custom language codes defined in Ren'Py
-                     final_target_lang = detected_lang_from_file
-                     logger.info(f"Using detected custom language code: '{detected_lang_from_file}'")
-            else:
-                 logger.debug(f"'translate' block language not detected, using current: {current_target_lang}")
-                 final_target_lang = current_target_lang
-        else: 
-            items, lines, breakpoints = core.load_and_parse_direct_file(file_path)
-            final_target_lang = current_target_lang 
-
-        if lines is None or items is None or breakpoints is None:
-            raise Exception(f"Core parsing function failed for '{base_name}'. See console.")
-
-        # Create ParsedFile object
-        tab_data = ParsedFile(
-            file_path=file_path,
-            mode=FileMode(selected_mode),
-            lines=lines,
-            items=items,
-            breakpoints=breakpoints,
-            output_path=file_path,
-            target_language=final_target_lang,
-            source_language=current_source_lang,
-            selected_model=model_name
-        )
-        # Dynamically attach table_widget (GUI element) to data object
-        setattr(tab_data, 'table_widget', new_table)
-        # Python dataclasses allow dynamic attribute assignment if not frozen.
+        # Phase 5: Delegating fully to controller and signal architecture.
+        # This function initiates the open, but UI creation happens via file_opened signal.
         
-        tab_data.table_widget = new_table # Dynamic assignment for now, or I update the class.
+        controller = getattr(main_window, '_app_controller', None)
+        if not controller or not controller.file_controller:
+            logger.error("File controller not available.")
+            return False
+
+        # Delegate to controller
+        # Controller emits 'file_opened' signal, which app_bootstrap handles to update UI.
+        parsed_file = controller.file_controller.open_file(file_path, selected_mode)
         
-        main_window.file_data[file_path] = tab_data
+        if not parsed_file:
+             return False
 
-        table_manager.populate_table(new_table, items, selected_mode)
-
-        tab_manager.add_new_tab(main_window, file_path, new_table, base_name)
-
-        if not items:
-            logger.warning(f"No items found in file {base_name} (Mode: {selected_mode})")
-            if selected_mode == "translate":
-                QMessageBox.warning(main_window, tr("warning_empty_translate_mode_title"), tr("warning_empty_translate_mode_msg"))
-            else:
-                QMessageBox.warning(main_window, "Empty File", f"No items found in '{base_name}' with mode '{selected_mode}'.")
+        # Do NOT manually create UI here to avoid duplication.
+        # The file_opened signal from controller triggers UI creation in app_bootstrap.
         
-        # Notify new architecture (Phase 5 Sync)
-        if hasattr(main_window, 'file_loaded'):
-            main_window.file_loaded.emit(file_path)
-
-        item_count = len(items)
-        main_window.statusBar().showMessage(tr("file_loaded", name=base_name, count=item_count, mode=selected_mode), 5000)
-
         return True
 
     except Exception as e:
         logger.error(f"Error loading file {file_path}: {e}")
         import traceback
         traceback.print_exc()
-        QMessageBox.critical(main_window, "Load Error", f"Failed to load file:\n{file_path}\n\nError: {e}")
-        
-        # Original cleanup logic from the old except block
-        if file_path in main_window.file_data:
-            del main_window.file_data[file_path]
-
-        for i in range(main_window.tab_widget.count()):
-             widget = main_window.tab_widget.widget(i)
-             if widget and widget.property("filePath") == file_path:
-                  logger.debug(f"Attempting to remove potentially failed tab for {file_path}")
-                  main_window.tab_widget.removeTab(i)
-
-                  tab_manager.rebuild_tab_data(main_window)
-                  break
-
-        main_window._update_ui_state()
-        main_window._display_current_item_status()
+        QMessageBox.critical(main_window, str(tr("error") or "Error"), f"Error loading file: {e}")
         return False
+
+
 
 def save_changes(main_window):
     current_data = main_window._get_current_file_data()
@@ -348,7 +286,7 @@ def save_changes(main_window):
     current_file_lines = current_data.lines
     current_items_list = current_data.items
     current_breakpoints = current_data.breakpoints
-    current_table = getattr(current_data, 'table_widget', None) # Safely get dynamically added attr
+    current_table = main_window._get_current_table()
     current_mode = current_data.mode
 
     if current_file_lines is None or current_items_list is None or current_breakpoints is None or current_mode is None:
@@ -357,38 +295,34 @@ def save_changes(main_window):
 
     success = False
     base_name = os.path.basename(file_path_to_save)
+    start_time = time.time()
     try:
         main_window.statusBar().showMessage(tr("saving_file", name=base_name), 0)
         QApplication.processEvents()
-
-        if current_mode == "translate":
-            core.save_translate_file(file_path_to_save, current_file_lines, current_breakpoints)
-        else: 
-            core.save_direct_file(file_path_to_save, current_items_list, current_file_lines, current_breakpoints)
-
-        # If we reached here, save was successful (otherwise SaveError would be raised)
-
-        current_data.is_modified = False
         
-        # text_key logic
-        for item in current_items_list:
-            item.is_modified_session = False
-            item.initial_text = item.current_text
+        controller = getattr(main_window, '_app_controller', None)
+        if not controller or not controller.file_controller:
+             logger.error("Controller unavailable for save.")
+             return False
 
-        if current_table:
-                table_manager.update_all_row_styles(current_table, current_items_list) 
+        success = controller.file_controller.save_file(current_data)
 
-        main_window._set_current_tab_modified(False) 
+        if success:
+            # text_key logic
+            for item in current_items_list:
+                item.is_modified_session = False
+                item.initial_text = item.current_text
 
-        main_window.statusBar().showMessage(tr("file_saved", path=file_path_to_save), 5000)
-        return True
+            if current_table:
+                    table_manager.update_all_row_styles(current_table, current_items_list) 
 
-    except SaveError as e:
-        logger.error(f"SaveError for {base_name}: {e}")
-        main_window.statusBar().showMessage(f"Error saving {base_name}: {e.message}", 10000)
-        QMessageBox.critical(main_window, "Save Error",
-                            f"Failed to save file:\n{file_path_to_save}\n\nError: {e.message}")
-        return False
+            main_window._set_current_tab_modified(False) 
+
+            main_window.statusBar().showMessage(tr("file_saved", path=file_path_to_save), 5000)
+            return True
+        else:
+            # Controller emits file_error, but we might want to show dialog here if not covered
+            return False
 
     except Exception as e:
         logger.error(f"Unexpected error saving {base_name}: {e}")

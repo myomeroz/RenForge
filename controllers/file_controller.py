@@ -105,7 +105,7 @@ class FileController(QObject):
         
         try:
             # Read file content
-            lines = core.read_file_lines(file_path)
+            lines, breakpoints = self._read_and_process_file(file_path)
             if lines is None:
                 self.file_error.emit(tr("error_reading_file", path=file_path))
                 return None
@@ -126,6 +126,7 @@ class FileController(QObject):
                 mode=file_mode,
                 lines=lines,
                 items=items,
+                breakpoints=breakpoints,
                 output_path=output_path or file_path,
                 target_language=detected_lang or self._settings.default_target_language,
                 source_language=self._settings.default_source_language,
@@ -144,6 +145,40 @@ class FileController(QObject):
             logger.error(f"Error opening file {file_path}: {e}")
             self.file_error.emit(str(e))
             return None
+
+    def _read_and_process_file(self, file_path: str) -> Tuple[Optional[List[str]], set]:
+        """
+        Read file and extract breakpoints.
+        
+        Returns:
+            (lines, breakpoints_set)
+        """
+        import re
+        import renforge_config as config
+        
+        try:
+            path_obj = Path(file_path)
+            raw_lines = path_obj.read_text(encoding='utf-8-sig').splitlines()
+            
+            processed_lines = []
+            breakpoints = set()
+            
+            breakpoint_pattern = re.compile(r'^(.*?)(\s+' + re.escape(config.BREAKPOINT_MARKER) + r'\s*)$')
+            
+            for i, raw_line in enumerate(raw_lines):
+                match = breakpoint_pattern.search(raw_line)
+                if match:
+                    line_content = match.group(1)
+                    breakpoints.add(i)
+                    processed_lines.append(line_content)
+                else:
+                    processed_lines.append(raw_line)
+                    
+            return processed_lines, breakpoints
+            
+        except Exception as e:
+            logger.error(f"Read error {file_path}: {e}")
+            return None, set()
     
     def _determine_mode(self, lines: List[str], requested_mode: Optional[str]) -> FileMode:
         """Determine the file mode."""
@@ -157,7 +192,9 @@ class FileController(QObject):
         
         # Check settings for auto/manual
         if self._settings.mode_selection_method == "manual":
-            # Will need to emit signal for UI to ask user
+            # Will need to emit signal for UI to ask user, or handle interactively?
+            # For now, return detected to proceed.
+            # Signal handling requires async flow usually.
             pass
         
         return detected
@@ -176,6 +213,21 @@ class FileController(QObject):
         
         return FileMode.DIRECT
     
+    def detect_file_mode(self, file_path: str) -> Optional[str]:
+        """
+        Public method to detect file mode without opening it fully.
+        
+        Args:
+            file_path: Path to file
+            
+        Returns:
+            "translate" or "direct" string, or None if error
+        """
+        lines, _ = self._read_and_process_file(file_path)
+        if lines is None:
+            return None
+        return self._detect_mode(lines).value
+
     def _parse_file(
         self, 
         lines: List[str], 
@@ -218,20 +270,24 @@ class FileController(QObject):
             # Update lines with current item values
             self._apply_items_to_lines(parsed_file)
             
-            # Write to disk
-            success = core.save_lines_to_file(
-                parsed_file.output_path, 
-                parsed_file.lines
-            )
+            # Prepare lines (re-insert breakpoints)
+            # Use core helper if available, or duplicate logic
+            import renforge_config as config
             
-            if success:
-                parsed_file.is_modified = False
-                self.file_saved.emit(parsed_file.file_path)
-                logger.info(f"Saved file: {parsed_file.filename}")
-                return True
-            else:
-                self.file_error.emit(tr("error_saving_file", path=parsed_file.output_path))
-                return False
+            # Prepare logic here to avoid core dependency on prepare_lines_for_saving if we want to decouple
+            # But relying on core logic is fine if it works.
+            # core.prepare_lines_for_saving(lines, breakpoints)
+            
+            lines_to_save = core.prepare_lines_for_saving(parsed_file.lines, parsed_file.breakpoints)
+            
+            # Write to disk
+            path_obj = Path(parsed_file.output_path)
+            path_obj.write_text('\n'.join(lines_to_save) + '\n', encoding='utf-8')
+            
+            parsed_file.is_modified = False
+            self.file_saved.emit(parsed_file.file_path)
+            logger.info(f"Saved file: {parsed_file.output_path}")
+            return True
                 
         except Exception as e:
             logger.error(f"Error saving file: {e}")

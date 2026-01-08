@@ -313,7 +313,7 @@ def revert_single_item_logic(main_window, item_index: int) -> bool:
     current_items = current_file_data.items
     current_file_lines = current_file_data.lines
     current_mode = current_file_data.mode
-    table_widget = getattr(current_file_data, 'table_widget', None) 
+    table_widget = main_window._get_current_table() 
 
     if not current_items or not current_mode or not table_widget or not (0 <= item_index < len(current_items)):
         logger.error(f"revert_single_item_logic - Invalid data for index {item_index}")

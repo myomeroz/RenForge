@@ -94,6 +94,300 @@ def _lazy_import_translator():
             return None 
     return GoogleTranslator
 
+# =============================================================================
+# BATCH TRANSLATION UTILITIES - Token Masking and Validation
+# =============================================================================
+
+# Patterns to protect during translation (Ren'Py tags, placeholders, formatting)
+RENPY_TOKEN_PATTERNS = [
+    r'\{i\}', r'\{/i\}',           # Italic tags
+    r'\{b\}', r'\{/b\}',           # Bold tags  
+    r'\{u\}', r'\{/u\}',           # Underline tags
+    r'\{s\}', r'\{/s\}',           # Strikethrough tags
+    r'\{color=[^}]+\}', r'\{/color\}',  # Color tags
+    r'\{size=[^}]+\}', r'\{/size\}',    # Size tags
+    r'\{font=[^}]+\}', r'\{/font\}',    # Font tags
+    r'\{w(?:=[\d.]+)?\}',          # Wait tags {w} {w=0.5}
+    r'\{p(?:=[\d.]+)?\}',          # Pause tags {p} {p=1.0}
+    r'\{nw\}',                     # No-wait tag
+    r'\{fast\}',                   # Fast display
+    r'\{cps=\d+\}', r'\{/cps\}',   # Characters per second
+    r'\[[^\]]+\]',                 # Variable placeholders [name] [player]
+    r'%\([^)]+\)[sd]',             # Python format %(name)s %(count)d
+    r'%[sd]',                      # Simple Python format %s %d
+    r'\{\d+\}',                    # Positional format {0} {1}
+]
+
+# Compiled pattern for efficiency
+_TOKEN_REGEX = None
+
+def _get_token_regex():
+    """Get compiled regex for all token patterns."""
+    global _TOKEN_REGEX
+    if _TOKEN_REGEX is None:
+        combined = '|'.join(f'({p})' for p in RENPY_TOKEN_PATTERNS)
+        _TOKEN_REGEX = re.compile(combined)
+    return _TOKEN_REGEX
+
+
+def mask_renpy_tokens(text: str) -> tuple:
+    """
+    Replace Ren'Py tokens with masked placeholders ⟦T0⟧, ⟦T1⟧, etc.
+    
+    Args:
+        text: Original text with Ren'Py tokens
+        
+    Returns:
+        Tuple of (masked_text, token_map) where token_map is {placeholder: original}
+    """
+    if not text:
+        return text, {}
+    
+    token_map = {}
+    counter = [0]  # Use list for closure mutability
+    
+    def replacer(match):
+        token = match.group(0)
+        placeholder = f"⟦T{counter[0]}⟧"
+        token_map[placeholder] = token
+        counter[0] += 1
+        return placeholder
+    
+    regex = _get_token_regex()
+    masked_text = regex.sub(replacer, text)
+    
+    return masked_text, token_map
+
+
+def unmask_renpy_tokens(text: str, token_map: dict) -> str:
+    """
+    Restore masked placeholders ⟦T0⟧ back to original Ren'Py tokens.
+    
+    Args:
+        text: Text with masked placeholders
+        token_map: Map of {placeholder: original_token}
+        
+    Returns:
+        Text with original tokens restored
+    """
+    if not text or not token_map:
+        return text
+    
+    result = text
+    for placeholder, original in token_map.items():
+        result = result.replace(placeholder, original)
+    
+    return result
+
+
+def validate_tokens_preserved(original: str, translated: str, token_map: dict) -> list:
+    """
+    Check if all masked tokens survived translation.
+    
+    Args:
+        original: Original text (with tokens)
+        translated: Translated text (should have same placeholders or tokens)
+        token_map: The token map from masking
+        
+    Returns:
+        List of missing placeholder strings (empty if all preserved)
+    """
+    missing = []
+    for placeholder in token_map.keys():
+        if placeholder not in translated:
+            missing.append(placeholder)
+    return missing
+
+
+def validate_translation_output(original: str, translated: str) -> tuple:
+    """
+    Validate translation output quality.
+    
+    Args:
+        original: Original source text
+        translated: Translation from AI
+        
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not translated:
+        return False, "Empty translation"
+    
+    translated = translated.strip()
+    
+    if not translated:
+        return False, "Translation is only whitespace"
+    
+    # Check for truncation (translation too short relative to original)
+    # Allow short translations for short originals
+    min_ratio = 0.2 if len(original) > 20 else 0.1
+    if len(translated) < len(original) * min_ratio and len(original) > 5:
+        return False, f"Translation too short: {len(translated)} vs {len(original)} chars"
+    
+    # Check if first character is suspicious (starts with punctuation when original doesn't)
+    if original and translated:
+        orig_starts_punct = original[0] in '.,!?;:-"\''
+        trans_starts_punct = translated[0] in '.,!?;:-"\''
+        if trans_starts_punct and not orig_starts_punct:
+            return False, f"Translation starts with unexpected punctuation: '{translated[0]}'"
+    
+    return True, None
+
+
+def translate_text_batch_gemini(
+    text: str,
+    source_lang: str,
+    target_lang: str,
+    character_tag: str = None,
+    retry_count: int = 0
+) -> tuple:
+    """
+    Strict translation function for batch processing.
+    Uses JSON-only output to prevent truncation and corruption.
+    
+    Args:
+        text: Text to translate
+        source_lang: Source language (e.g., 'english')
+        target_lang: Target language (e.g., 'turkish')
+        character_tag: Optional character name for context
+        retry_count: Internal retry counter
+        
+    Returns:
+        Tuple of (translated_text, error_message)
+    """
+    global gemini_model, no_ai
+    
+    if no_ai or gemini_model is None:
+        return (None, "Gemini model not initialized")
+    
+    if not is_internet_available():
+        return (None, "No internet connection")
+    
+    if not text or not text.strip():
+        return ("", None)  # Empty input -> empty output
+    
+    # Mask Ren'Py tokens
+    masked_text, token_map = mask_renpy_tokens(text)
+    
+    # Build strict translation prompt with JSON output
+    character_context = f"The speaker is '{character_tag}'." if character_tag else ""
+    
+    prompt = f"""You are a strict translation engine for Ren'Py visual novel scripts.
+
+TASK: Translate the following text from {source_lang} to {target_lang}.
+{character_context}
+
+RULES:
+1. Output MUST be valid JSON: {{"translation":"your translation here"}}
+2. Preserve ALL placeholders exactly: ⟦T0⟧, ⟦T1⟧, etc.
+3. Keep punctuation, spacing, and formatting intact.
+4. Do NOT add explanations or quotes around the text.
+5. Translate naturally while maintaining original meaning and tone.
+
+TEXT TO TRANSLATE:
+{masked_text}
+
+OUTPUT (JSON only):"""
+
+    max_attempts = 2 if retry_count == 0 else 1
+    
+    for attempt in range(max_attempts):
+        try:
+            safety_settings = [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ]
+            
+            response = gemini_model.generate_content(prompt, safety_settings=safety_settings)
+            
+            if not response.parts:
+                logger.warning(f"[translate_batch] Empty response from Gemini (attempt {attempt+1})")
+                continue
+            
+            raw_output = response.text.strip()
+            logger.debug(f"[translate_batch] Raw output: {raw_output[:200]}...")
+            
+            # Parse JSON output
+            translated = None
+            
+            # Try to extract JSON
+            try:
+                # Handle potential markdown code blocks
+                if raw_output.startswith("```"):
+                    # Remove code fence
+                    lines = raw_output.split('\n')
+                    json_lines = [l for l in lines if not l.startswith("```")]
+                    raw_output = '\n'.join(json_lines).strip()
+                
+                # Try direct JSON parse
+                data = json.loads(raw_output)
+                translated = data.get("translation", "")
+                
+            except json.JSONDecodeError:
+                # Fallback: Try to extract translation from partial JSON
+                match = re.search(r'"translation"\s*:\s*"([^"]*(?:\\"[^"]*)*)"', raw_output)
+                if match:
+                    translated = match.group(1).replace('\\"', '"')
+                else:
+                    # Last resort: Use the raw text if it looks reasonable
+                    if not raw_output.startswith('{') and len(raw_output) > 0:
+                        translated = raw_output
+                    else:
+                        logger.warning(f"[translate_batch] Failed to parse JSON: {raw_output[:100]}")
+                        continue
+            
+            if not translated:
+                continue
+            
+            # Validate token preservation
+            missing_tokens = validate_tokens_preserved(masked_text, translated, token_map)
+            if missing_tokens:
+                logger.warning(f"[translate_batch] Missing tokens: {missing_tokens}")
+                if attempt + 1 < max_attempts:
+                    # Retry with stricter prompt
+                    prompt = prompt.replace(
+                        "Preserve ALL placeholders exactly",
+                        f"CRITICAL: You MUST include these exact placeholders in your translation: {', '.join(token_map.keys())}"
+                    )
+                    continue
+                # On final attempt, log but continue anyway
+            
+            # Unmask tokens
+            final_translation = unmask_renpy_tokens(translated, token_map)
+            
+            # Post-processing cleanups
+            # Remove leading colon/dash which is a common AI artifact (e.g. "Translation: ..." or "- ...")
+            if final_translation:
+                # Check for explicit artifact patterns
+                if final_translation.startswith(":"):
+                    final_translation = final_translation.lstrip(": ").strip()
+                elif final_translation.startswith("- ") and not text.startswith("-"):
+                    # Only strip dash if original didn't have it
+                    final_translation = final_translation.lstrip("- ").strip()
+            
+            # Validate output quality
+            is_valid, error = validate_translation_output(text, final_translation)
+            if not is_valid:
+                logger.warning(f"[translate_batch] Validation failed: {error}")
+                if attempt + 1 < max_attempts:
+                    continue
+                # Return anyway but log the issue
+            
+            # Add small delay between API calls
+            time.sleep(getattr(config, 'REQUEST_DELAY_SECONDS', 0.3))
+            
+            return (final_translation, None)
+            
+        except Exception as e:
+            logger.error(f"[translate_batch] Error (attempt {attempt+1}): {e}")
+            if attempt + 1 >= max_attempts:
+                return (None, str(e))
+    
+    return (None, "Failed after all retry attempts")
+
+
 def get_google_languages() -> dict | None:
 
     if not is_internet_available():

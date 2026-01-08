@@ -42,8 +42,8 @@ TRANSLATE_BLOCK_REGEX = re.compile(r'^\s*translate\s+(\w+)\s+(\w+):')
 OLD_STRING_REGEX = re.compile(r'^(\s*)old\s+"((?:\\.|[^"\\])*)"(.*)$')
 NEW_STRING_REGEX = re.compile(r'^(\s*)new\s+"((?:\\.|[^"\\])*)"(.*)$')
 
-DEFAULT_TARGET_LANG = "russian"
-DEFAULT_SOURCE_LANG = "english"
+DEFAULT_TARGET_LANG = "tr"
+DEFAULT_SOURCE_LANG = "en"
 
 STYLE_DEFAULTS = {
     "text_color": "#f0f0f0",             

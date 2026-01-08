@@ -11,7 +11,7 @@ Handles all translation-related business logic:
 from typing import List, Optional, Dict, Any, Callable
 from dataclasses import replace
 
-from PyQt6.QtCore import QObject, pyqtSignal, QThread, QProcess
+from PyQt6.QtCore import QObject, pyqtSignal, QThread, QRunnable, pyqtSlot, QThreadPool
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog
 
 from renforge_logger import get_logger
@@ -21,6 +21,188 @@ from models.settings_model import SettingsModel
 import renforge_ai as ai
 
 logger = get_logger("controllers.translation")
+
+
+
+# =============================================================================
+# WORKER CLASSES
+# =============================================================================
+
+class BatchAIWorkerSignals(QObject):
+    """Signals for the BatchAIWorker."""
+    progress = pyqtSignal(int, int)
+    item_updated = pyqtSignal(int, str)
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+class BatchAIWorker(QRunnable):
+    """Background worker for batch AI translation."""
+    
+    def __init__(self, parsed_file: ParsedFile, indices: List[int], model: str, source_lang: str, target_lang: str, controller: 'TranslationController'):
+        super().__init__()
+        self.parsed_file = parsed_file
+        self.indices = indices
+        self.model = model
+        self.source_lang = source_lang
+        self.target_lang = target_lang
+        self.controller = controller
+        self.signals = BatchAIWorkerSignals()
+        self._is_canceled = False
+        
+    def cancel(self):
+        self._is_canceled = True
+        
+    @pyqtSlot()
+    def run(self):
+        import time
+        import renforge_config as config
+        
+        results = {'success_count': 0, 'error_count': 0, 'errors': [], 'canceled': False, 'processed': 0}
+        total = len(self.indices)
+        results['total'] = total
+        
+        for i, idx in enumerate(self.indices):
+            if self._is_canceled:
+                results['canceled'] = True
+                break
+            
+            item = self.parsed_file.get_item(idx)
+            if not item:
+                continue
+            
+            text = item.original_text or item.current_text
+            if not text or not text.strip():
+                self.signals.progress.emit(i + 1, total)
+                continue
+            
+            try:
+                # Get languages
+                target_lang = self.target_lang
+                source_lang = self.source_lang
+                
+                # Use strict batch translation
+                result = ai.translate_text_batch_gemini(
+                    text=text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    character_tag=getattr(item, 'character_tag', None)
+                )
+                
+                # Unpack result
+                if isinstance(result, tuple):
+                    translated, error_msg = result
+                else:
+                    translated = result
+                    error_msg = None
+                
+                if self._is_canceled:
+                    results['canceled'] = True
+                    break
+                
+                if translated and str(translated).strip():
+                    # Update file model
+                    self.parsed_file.update_item_text(idx, translated)
+                    self.signals.item_updated.emit(idx, translated)
+                    results['success_count'] += 1
+                else:
+                    results['error_count'] += 1
+                    err_detail = error_msg if error_msg else "Empty AI response"
+                    results['errors'].append(f"Line {item.line_index}: {err_detail}")
+                    
+            except Exception as e:
+                results['error_count'] += 1
+                results['errors'].append(f"Line {item.line_index}: {str(e)}")
+            
+            self.signals.progress.emit(i + 1, total)
+            
+            # Throttle
+            if not self._is_canceled:
+                time.sleep(getattr(config, 'BATCH_AI_DELAY', 0.5))
+        
+        results['processed'] = results['success_count'] + results['error_count']
+        self.signals.finished.emit(results)
+
+class BatchGoogleWorker(QRunnable):
+    """Background worker for batch Google translation."""
+    
+    def __init__(self, parsed_file: ParsedFile, indices: List[int], source_lang: str, target_lang: str, controller: 'TranslationController'):
+        super().__init__()
+        self.parsed_file = parsed_file
+        self.indices = indices
+        self.source_lang = source_lang
+        self.target_lang = target_lang
+        self.controller = controller
+        self.signals = BatchAIWorkerSignals() # Reuse same signals class as it has progress, item_updated etc.
+        self._is_canceled = False
+        
+    def cancel(self):
+        self._is_canceled = True
+        
+    @pyqtSlot()
+    def run(self):
+        import time
+        import renforge_config as config
+        
+        results = {'success_count': 0, 'error_count': 0, 'errors': [], 'canceled': False, 'processed': 0}
+        total = len(self.indices)
+        results['total'] = total
+        
+        # Init translator
+        try:
+            Translator = ai._lazy_import_translator()
+            if not Translator:
+                self.signals.error.emit(tr("error_library_not_found_msg"))
+                results['errors'].append("GoogleTranslator library not found")
+                self.signals.finished.emit(results)
+                return
+                
+            translator = Translator(source=self.source_lang, target=self.target_lang)
+        except Exception as e:
+            self.signals.error.emit(f"Init failed: {e}")
+            results['errors'].append(str(e))
+            self.signals.finished.emit(results)
+            return
+        
+        for i, idx in enumerate(self.indices):
+            if self._is_canceled:
+                results['canceled'] = True
+                break
+            
+            item = self.parsed_file.get_item(idx)
+            if not item:
+                continue
+            
+            text = item.original_text or item.current_text
+            if not text or not text.strip():
+                self.signals.progress.emit(i + 1, total)
+                continue
+            
+            try:
+                translated = translator.translate(text)
+                
+                if self._is_canceled:
+                    results['canceled'] = True
+                    break
+                
+                if translated:
+                    self.parsed_file.update_item_text(idx, translated)
+                    self.signals.item_updated.emit(idx, translated)
+                    results['success_count'] += 1
+                else:
+                    results['error_count'] += 1
+                    results['errors'].append(f"Line {item.line_index}: Empty result")
+                    
+            except Exception as e:
+                results['error_count'] += 1
+                results['errors'].append(f"Line {item.line_index}: {str(e)}")
+            
+            self.signals.progress.emit(i + 1, total)
+            
+            if not self._is_canceled:
+                time.sleep(getattr(config, 'BATCH_TRANSLATE_DELAY', 0.1))
+        
+        results['processed'] = results['success_count'] + results['error_count']
+        self.signals.finished.emit(results)
 
 
 class TranslationController(QObject):
@@ -60,6 +242,43 @@ class TranslationController(QObject):
         self._is_translating = False
         
         logger.debug("TranslationController initialized")
+
+    def check_google_availability(self) -> tuple[bool, Optional[str]]:
+        """
+        Check if Google Translate is available (internet + library).
+        
+        Returns:
+            (is_available, error_message_key)
+        """
+        if not ai.is_internet_available():
+            return False, "google_trans_unavailable_net"
+            
+        Translator = ai._lazy_import_translator()
+        if Translator is None:
+            return False, "google_trans_unavailable_lib"
+            
+        return True, None
+
+    def check_ai_availability(self) -> tuple[bool, Optional[str]]:
+        """
+        Check if AI is available (settings + model check).
+        
+        Returns:
+            (is_available, error_message_key)
+        """
+        # Note: ensuring Gemini initialized usually requires UI interaction if fail,
+        # but here we just check state.
+        if not ai.is_internet_available():
+            return False, "batch_ai_unavailable_net"
+
+        if ai.no_ai:
+            return False, "edit_ai_gemini_unavailable"
+            
+        if ai.gemini_model is None:
+            return False, "edit_ai_gemini_unavailable"
+            
+        return True, None
+
     
     # =========================================================================
     # PROPERTIES
@@ -352,6 +571,62 @@ class TranslationController(QObject):
         self.translation_completed.emit(results['success_count'])
         
         return results
+
+    def start_batch_ai_translation(
+        self,
+        parsed_file: ParsedFile,
+        indices: List[int],
+        model: Optional[str] = None,
+        source_lang: Optional[str] = None,
+        target_lang: Optional[str] = None
+    ) -> tuple:
+        """
+        Start an asynchronous batch AI translation.
+        
+        Args:
+            parsed_file: The file to translate
+            indices: List of item indices
+            model: Optional model name override
+            source_lang: Optional source language override
+            target_lang: Optional target language override
+            
+        Returns:
+            Tuple of (worker, signals)
+        """
+        model_name = model or self.selected_model
+        source = source_lang or self.source_language
+        target = target_lang or self.target_language
+        
+        # Create worker
+        worker = BatchAIWorker(parsed_file, indices, model_name, source, target, self)
+        
+        # Start in thread pool
+        QThreadPool.globalInstance().start(worker)
+        
+        return worker, worker.signals
+
+    def start_batch_google_translation(
+        self,
+        parsed_file: ParsedFile,
+        indices: List[int],
+        source_lang: str,
+        target_lang: str
+    ) -> tuple:
+        """
+        Start an asynchronous batch Google translation.
+        
+        Args:
+            parsed_file: The file to translate
+            indices: List of item indices
+            source_lang: Source language code
+            target_lang: Target language code
+            
+        Returns:
+            Tuple of (worker, signals)
+        """
+        worker = BatchGoogleWorker(parsed_file, indices, source_lang, target_lang, self)
+        QThreadPool.globalInstance().start(worker)
+        return worker, worker.signals
     
     def cancel_translation(self):
         """Cancel ongoing translation."""
