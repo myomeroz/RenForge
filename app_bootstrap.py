@@ -657,7 +657,20 @@ def _handle_batch_ai(view: 'RenForgeGUI'):
                     continue
                 
                 try:
-                    translated = ai.translate_with_ai(text, self.model)
+                    # Get target language from settings
+                    target_lang = getattr(config, 'TARGET_LANGUAGE', 'turkish')
+                    source_lang = getattr(config, 'SOURCE_LANGUAGE', 'english')
+                    
+                    # Use the correct AI translation function
+                    translated = ai.refine_text_with_gemini_translate(
+                        original_text=text,
+                        current_translation="",  # Empty for new translation
+                        user_instruction="Translate this text accurately while preserving formatting tags",
+                        context_info="",
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        character_tag=getattr(item, 'character_tag', None)
+                    )
                     
                     if self._is_canceled:
                         results['canceled'] = True
