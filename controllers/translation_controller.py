@@ -18,7 +18,6 @@ from renforge_logger import get_logger
 from locales import tr
 from models.parsed_file import ParsedFile, ParsedItem
 from models.settings_model import SettingsModel
-import renforge_core as core
 import renforge_ai as ai
 
 logger = get_logger("controllers.translation")
@@ -111,7 +110,13 @@ class TranslationController(QObject):
         target = target_lang or self.target_language
         
         try:
-            translated = core.translate_text(text, source, target)
+            Translator = ai._lazy_import_translator()
+            if Translator is None:
+                self.translation_error.emit(tr("error_library_not_found_msg"))
+                return None
+            
+            translator = Translator(source=source, target=target)
+            translated = translator.translate(text)
             logger.debug(f"Google translated: '{text[:30]}...' -> '{translated[:30] if translated else 'None'}...'")
             return translated
         except Exception as e:
@@ -123,7 +128,9 @@ class TranslationController(QObject):
         self,
         text: str,
         model: Optional[str] = None,
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        source_lang: Optional[str] = None,
+        target_lang: Optional[str] = None
     ) -> Optional[str]:
         """
         Translate/edit a single text with AI.
@@ -132,19 +139,42 @@ class TranslationController(QObject):
             text: Text to translate/edit
             model: AI model name (uses default if not provided)
             context: Additional context for AI
+            source_lang: Source language (uses default if not provided)
+            target_lang: Target language (uses default if not provided)
             
         Returns:
             AI response text, or None on failure
         """
         model_name = model or self.selected_model
+        source = source_lang or self.source_language
+        target = target_lang or self.target_language
         
         if not model_name:
             self.translation_error.emit(tr("error_no_model"))
             return None
         
+        if ai.no_ai or ai.gemini_model is None:
+            self.translation_error.emit(tr("edit_ai_gemini_unavailable"))
+            return None
+        
         try:
-            result = ai.translate_with_ai(text, model_name, context)
-            logger.debug(f"AI translated with {model_name}")
+            user_instruction = context or "Translate this text accurately while preserving formatting tags"
+            result, error_msg = ai.refine_text_with_gemini_translate(
+                original_text=text,
+                current_translation="",
+                user_instruction=user_instruction,
+                context_info=[],
+                source_lang=source,
+                target_lang=target,
+                character_tag=None
+            )
+            
+            if error_msg:
+                logger.warning(f"AI translation returned error: {error_msg}")
+                self.translation_error.emit(error_msg)
+                return None
+            
+            logger.debug(f"AI translated with Gemini")
             return result
         except Exception as e:
             logger.error(f"AI translation failed: {e}")
@@ -179,6 +209,18 @@ class TranslationController(QObject):
         source = source_lang or self.source_language
         target = target_lang or self.target_language
         
+        # Initialize Google Translator
+        Translator = ai._lazy_import_translator()
+        if Translator is None:
+            self.translation_error.emit(tr("error_library_not_found_msg"))
+            return {'success_count': 0, 'error_count': 1, 'errors': ['GoogleTranslator not available']}
+        
+        try:
+            self._translator = Translator(source=source, target=target)
+        except Exception as e:
+            self.translation_error.emit(str(e))
+            return {'success_count': 0, 'error_count': 1, 'errors': [str(e)]}
+        
         self._is_translating = True
         self.translation_started.emit()
         
@@ -198,12 +240,12 @@ class TranslationController(QObject):
             if not item:
                 continue
             
-            text = item.current_text
+            text = item.original_text or item.current_text
             if not text or not text.strip():
                 continue
             
             try:
-                translated = core.translate_text(text, source, target)
+                translated = self._translator.translate(text)
                 
                 if translated:
                     parsed_file.update_item_text(idx, translated)
@@ -271,20 +313,32 @@ class TranslationController(QObject):
             if not item:
                 continue
             
-            text = item.current_text
+            text = item.original_text or item.current_text
             if not text or not text.strip():
                 continue
             
             try:
-                translated = ai.translate_with_ai(text, model_name)
+                source = self.source_language
+                target = self.target_language
                 
-                if translated:
+                translated, error_msg = ai.refine_text_with_gemini_translate(
+                    original_text=text,
+                    current_translation="",
+                    user_instruction="Translate this text accurately while preserving formatting tags",
+                    context_info=[],
+                    source_lang=source,
+                    target_lang=target,
+                    character_tag=getattr(item, 'character_tag', None)
+                )
+                
+                if translated and not error_msg:
                     parsed_file.update_item_text(idx, translated)
                     self.item_translated.emit(idx, translated)
                     results['success_count'] += 1
                 else:
                     results['error_count'] += 1
-                    results['errors'].append(f"Line {item.line_index}: Empty AI response")
+                    err_detail = error_msg if error_msg else "Empty AI response"
+                    results['errors'].append(f"Line {item.line_index}: {err_detail}")
                     
             except Exception as e:
                 results['error_count'] += 1
