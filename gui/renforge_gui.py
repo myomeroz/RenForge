@@ -24,10 +24,10 @@ try:
     import renforge_config as config
     import renforge_core as core
     import renforge_ai as ai 
-    import renforge_parser as parser
+    import parser.core as parser
     from renforge_settings import save_settings
     from locales import tr 
-    from renforge_models import TabData, ParsedItem
+    from models.parsed_file import ParsedFile, ParsedItem
     from renforge_enums import FileMode, ItemType 
 
     from gui.renforge_gui_dialog import (AIEditDialog, GoogleTranslateDialog, ApiKeyDialog,
@@ -101,7 +101,7 @@ class RenForgeGUI(QMainWindow):
 
         self.current_file_path = None 
         self.current_project_path = None 
-        self.file_data: dict[str, TabData] = {} 
+        self.file_data: dict[str, ParsedFile] = {} 
         self.tab_data = {}  
         self.settings = {}  
         self.last_open_directory = None 
@@ -519,7 +519,7 @@ class RenForgeGUI(QMainWindow):
         current_widget = self.tab_widget.currentWidget()
         return current_widget if isinstance(current_widget, QTableWidget) else None
 
-    def _get_current_file_data(self) -> TabData | None:
+    def _get_current_file_data(self) -> ParsedFile | None:
 
         current_tab_index = self.tab_widget.currentIndex()
         if current_tab_index != -1:
@@ -570,18 +570,18 @@ class RenForgeGUI(QMainWindow):
 
         data = self._get_current_file_data()
         if data:
-            was_modified = data.is_modified
-            if was_modified != modified:
-                data.is_modified = modified
+            data.is_modified = modified
 
-                current_tab_index = self.tab_widget.currentIndex()
-                if current_tab_index != -1 and self.current_file_path:
-
-                    base_name = os.path.basename(data.output_path or self.current_file_path)
-                    new_tab_text = f"{base_name}*" if modified else base_name
+            current_tab_index = self.tab_widget.currentIndex()
+            if current_tab_index != -1 and self.current_file_path:
+                base_name = os.path.basename(data.output_path or self.current_file_path)
+                new_tab_text = f"{base_name}*" if modified else base_name
+                
+                # Update tab text if it doesn't match target state
+                if self.tab_widget.tabText(current_tab_index) != new_tab_text:
                     self.tab_widget.setTabText(current_tab_index, new_tab_text)
 
-                self._update_ui_state()
+            self._update_ui_state()
 
     def _update_ui_state(self):
 

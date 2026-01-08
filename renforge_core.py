@@ -7,8 +7,10 @@ logger = get_logger("core")
 import renforge_config as config
 from locales import tr
 
-import renforge_parser as parser
-from renforge_models import ParsedItem
+import parser.core as parser
+from parser.patterns import RenpyPatterns
+from parser.direct_parser import NON_TEXT_KEYWORDS
+from models.parsed_file import ParsedItem
 from renforge_enums import ItemType, ContextType
 from renforge_exceptions import FileOperationError, SaveError, ModeDetectionError
 from dataclasses import replace
@@ -43,8 +45,8 @@ def detect_file_mode(file_path):
     has_translate_blocks = False
     has_screen_definitions = False
 
-    screen_def_regex = parser.RE_SCREEN_START
-    translate_block_regex = parser.RE_TRANSLATE_START
+    screen_def_regex = RenpyPatterns.SCREEN_START
+    translate_block_regex = RenpyPatterns.TRANSLATE_START
 
     logger.debug(f"[detect_file_mode] Scanning for translate blocks and screen definitions...")
     for line in loaded_file_lines:
@@ -113,7 +115,7 @@ def load_and_parse_translate_file(input_path):
 
     logger.debug(tr("core_parser_start"))
 
-    all_parsed_items = parser.parse_file_contextually(loaded_file_lines)
+    all_parsed_items, _ = parser.parse_file_contextually(loaded_file_lines)
 
     logger.debug(tr("core_parser_process"))
     parsed_translatable_items = []
@@ -303,7 +305,7 @@ def get_context_for_translate_item(item_index, items_list, lines_list):
                  pass
              else:
 
-                 match_dialogue = parser.RE_DIALOGUE.match(line_content)
+                 match_dialogue = RenpyPatterns.DIALOGUE.match(line_content)
                  if match_dialogue:
                      char_tag = match_dialogue.group(2) 
 
@@ -471,30 +473,30 @@ def get_context_for_direct_item(item_index, items_list, lines_list):
              if line_content.lstrip().startswith('#'): pass 
              else:
 
-                 match_var_dollar = parser.RE_VAR_ASSIGN_DOLLAR.match(line_content)
+                 match_var_dollar = RenpyPatterns.VAR_ASSIGN_DOLLAR.match(line_content)
                  if match_var_dollar:
                      var_name = match_var_dollar.group(2) 
                      current_text = match_var_dollar.group(3).replace('\\"', '"')
                  else:
 
-                     match_var_py = parser.RE_VAR_ASSIGN_PYTHON.match(line_content)
+                     match_var_py = RenpyPatterns.VAR_ASSIGN_PYTHON.match(line_content)
                      if match_var_py:
                           var_name = match_var_py.group(2) 
                           current_text = match_var_py.group(3).replace('\\"', '"')
 
-                     elif parser.RE_DIALOGUE.match(line_content): 
-                          match_dialogue = parser.RE_DIALOGUE.match(line_content)
-                          if match_dialogue and match_dialogue.group(2) not in parser.NON_TEXT_KEYWORDS:
+                     elif RenpyPatterns.DIALOGUE.match(line_content): 
+                          match_dialogue = RenpyPatterns.DIALOGUE.match(line_content)
+                          if match_dialogue and match_dialogue.group(2) not in NON_TEXT_KEYWORDS:
                                char_tag = match_dialogue.group(2)
                                current_text = match_dialogue.group(5).replace('\\"', '"')
-                     elif parser.RE_NARRATION.match(line_content): 
-                         match_narration = parser.RE_NARRATION.match(line_content)
+                     elif RenpyPatterns.NARRATION.match(line_content): 
+                         match_narration = RenpyPatterns.NARRATION.match(line_content)
                          first_word = line_content.lstrip().split(None, 1)[0] if line_content.lstrip() else ""
-                         if match_narration and first_word not in parser.NON_TEXT_KEYWORDS:
+                         if match_narration and first_word not in NON_TEXT_KEYWORDS:
                              current_text = match_narration.group(2).replace('\\"', '"')
                      else:
 
-                          match_screen_generic = parser.RE_SCREEN_GENERIC_TEXT.match(line_content)
+                          match_screen_generic = RenpyPatterns.SCREEN_GENERIC_TEXT.match(line_content)
                           if match_screen_generic:
                               _, _, text_quotes, text_underscore, _ = match_screen_generic.groups()
                               if text_quotes is not None:
@@ -503,7 +505,7 @@ def get_context_for_direct_item(item_index, items_list, lines_list):
                                    current_text = text_underscore.replace('\\"', '"')
                           else:
 
-                               match_screen_prop = parser.RE_SCREEN_PROP.match(line_content)
+                               match_screen_prop = RenpyPatterns.SCREEN_PROP.match(line_content)
                                if match_screen_prop:
                                    _, _, text_quotes, text_underscore, _ = match_screen_prop.groups()
                                    if text_quotes is not None:

@@ -45,7 +45,7 @@ class RenpyPatterns:
     NARRATION_COMMENT = re.compile(r'^"((?:\\.|[^"\\])*)"(.*)$')
     
     # Menu choice: "text":
-    MENU_CHOICE = re.compile(r'^(\s*)"((?:\\.|[^"\\])*)"(\s*:.+?)$')
+    MENU_CHOICE = re.compile(r'^(\s*)"((?:\\.|[^"\\])*)"(\s*:.*)$')
     
     # Variable assignment: $ var = "text"
     VAR_ASSIGN_DOLLAR = re.compile(r'^(\s*)\$\s+([a-zA-Z_]\w*)\s*=\s*"((?:\\.|[^"\\])*)"(.*)$')

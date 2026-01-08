@@ -261,6 +261,12 @@ def _wire_view_to_controller_signals(view: 'RenForgeGUI', controller: AppControl
     )
     logger.debug("    - batch_google_requested -> _handle_batch_google")
     
+    # Batch AI Translate - controller-first with background worker
+    view.batch_ai_requested.connect(
+        lambda: _handle_batch_ai(view)
+    )
+    logger.debug("    - batch_ai_requested -> _handle_batch_ai")
+    
     # Settings changes - sync to settings model
     view.target_language_changed.connect(
         lambda code: _on_target_language_changed(controller, view, code)
@@ -310,24 +316,15 @@ def _on_file_opened_from_controller(view: 'RenForgeGUI', parsed_file):
                 logger.debug(f"  File already open, switched to tab {idx}")
                 return
     
-    # Create TabData-compatible structure from ParsedFile
-    from renforge_models import TabData
-    tab_data = TabData(
-        file_path=file_path,
-        output_path=parsed_file.output_path or file_path,
-        mode=parsed_file.mode.value if hasattr(parsed_file.mode, 'value') else str(parsed_file.mode),
-        lines=list(parsed_file.lines),
-        items=list(parsed_file.items),
-        is_modified=False,
-        breakpoints=set(parsed_file.breakpoints) if parsed_file.breakpoints else set(),
-        item_index=0,
-        target_language=parsed_file.target_language,
-        source_language=parsed_file.source_language,
-        selected_model=parsed_file.selected_model
-    )
+    # Directly store the ParsedFile
+    # Ideally RenForgeGUI should just accept ParsedFile objects
+    view.file_data[file_path] = parsed_file
+    view.current_file_path = file_path
     
-    # Store in view's file_data
-    view.file_data[file_path] = tab_data
+    # Dynamic attribute for legacy compatibility if needed
+    # The view expects .table_widget on the data object sometimes
+    # We can handle this when creating the table
+
     view.current_file_path = file_path
     
     # =============================================
@@ -342,14 +339,27 @@ def _on_file_opened_from_controller(view: 'RenForgeGUI', parsed_file):
     except Exception as e:
         logger.warning(f"  Failed to sync to project_model: {e}")
     
-    # Create tab and table using legacy managers
-    tab_manager.create_tab_for_file(view, file_path, tab_data)
+    # Create tab and table using legacy managers (Refactored to manual creation below)
     
     # Get the newly created table and populate it
-    table_widget = view._get_current_table()
-    if table_widget:
-        table_manager.populate_table(view, table_widget, tab_data)
-        tab_data.table_widget = table_widget
+    # Create table widget (using legacy manager helper)
+    table_widget = table_manager.create_table_widget(view)
+    table_widget.setProperty("filePath", file_path)
+
+    # Populate table with parsed items
+    mode_str = parsed_file.mode.value if hasattr(parsed_file.mode, 'value') else str(parsed_file.mode)
+    table_manager.populate_table(table_widget, parsed_file.items, mode_str)
+
+    # Attach table to ParsedFile (for legacy compatibility)
+    if not hasattr(parsed_file, 'table_widget'):
+        setattr(parsed_file, 'table_widget', table_widget)
+    else:
+        parsed_file.table_widget = table_widget
+
+    # Add tab
+    import os
+    base_name = os.path.basename(file_path)
+    tab_manager.add_new_tab(view, file_path, table_widget, base_name)
     
     # Update UI state
     view._update_language_model_display()
@@ -529,14 +539,197 @@ def _handle_batch_google(view: 'RenForgeGUI'):
     action_handler.batch_translate_google(view)
 
 
+def _handle_batch_ai(view: 'RenForgeGUI'):
+    """
+    Handle Batch AI Translate request from view signal.
+    Uses TranslationController for controller-first architecture.
+    """
+    from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+    from PyQt6.QtCore import Qt, QRunnable, QThreadPool, QObject, pyqtSignal, pyqtSlot
+    import renforge_ai as ai
+    from locales import tr
+    
+    logger.debug("_handle_batch_ai called via signal")
+    
+    # Pre-flight checks
+    if not ai.is_internet_available():
+        view.statusBar().showMessage(tr("batch_ai_unavailable_net"), 4000)
+        QMessageBox.warning(view, tr("error_no_network_title"), tr("error_no_network_msg_batch"))
+        return
+    
+    # Ensure Gemini is initialized
+    import gui.gui_settings_manager as settings_manager
+    if not settings_manager.ensure_gemini_initialized(view, force_init=True):
+        view.statusBar().showMessage(tr("batch_ai_failed_init"), 5000)
+        return
+    
+    if ai.no_ai or ai.gemini_model is None:
+        view.statusBar().showMessage(tr("batch_ai_gemini_unavailable"), 5000)
+        QMessageBox.warning(view, tr("edit_ai_gemini_error_title"), tr("edit_ai_gemini_error_msg"))
+        return
+    
+    # Get current table and data
+    current_table = view._get_current_table()
+    current_file_data = view._get_current_file_data()
+    
+    if not current_table or not current_file_data:
+        view.statusBar().showMessage(tr("batch_no_active_tab"), 3000)
+        return
+    
+    selected_rows_indices = sorted(list(set(index.row() for index in current_table.selectedIndexes())))
+    if not selected_rows_indices:
+        view.statusBar().showMessage(tr("batch_no_selected_rows"), 3000)
+        return
+    
+    # Get selected model
+    selected_model = view.model_combo.currentText() if view.model_combo.count() > 0 else None
+    if not selected_model or selected_model == "Loading models...":
+        QMessageBox.warning(view, tr("batch_lang_required_title"), tr("error_no_model"))
+        return
+    
+    # Confirmation dialog
+    target_name = view.target_lang_combo.currentText()
+    confirm_msg = tr("batch_ai_confirm_msg", count=len(selected_rows_indices), model=selected_model, target=target_name)
+    reply = QMessageBox.question(view, tr("batch_ai_title"), confirm_msg,
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                 QMessageBox.StandardButton.No)
+    if reply != QMessageBox.StandardButton.Yes:
+        view.statusBar().showMessage(tr("batch_canceled"), 3000)
+        return
+    
+    # Create progress dialog
+    progress = QProgressDialog(tr("batch_ai_progress_msg"), tr("cancel"), 0, len(selected_rows_indices), view)
+    progress.setWindowTitle(tr("batch_ai_title"))
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+    
+    # Use TranslationController
+    translation_controller = view._app_controller.translation if hasattr(view._app_controller, 'translation') else None
+    
+    if translation_controller is None:
+        logger.error("TranslationController not available")
+        view.statusBar().showMessage("TranslationController not available", 5000)
+        progress.close()
+        return
+    
+    # Worker implementation for background execution
+    class BatchAIWorkerSignals(QObject):
+        progress = pyqtSignal(int, int)
+        item_updated = pyqtSignal(int, str)
+        finished = pyqtSignal(dict)
+        error = pyqtSignal(str)
+    
+    class BatchAIWorker(QRunnable):
+        def __init__(self, parsed_file, indices, model, controller):
+            super().__init__()
+            self.parsed_file = parsed_file
+            self.indices = indices
+            self.model = model
+            self.controller = controller
+            self.signals = BatchAIWorkerSignals()
+            self._is_canceled = False
+        
+        def cancel(self):
+            self._is_canceled = True
+            self.controller.cancel_translation()
+        
+        @pyqtSlot()
+        def run(self):
+            import time
+            import renforge_config as config
+            
+            results = {'success_count': 0, 'error_count': 0, 'errors': [], 'canceled': False}
+            total = len(self.indices)
+            
+            for i, idx in enumerate(self.indices):
+                if self._is_canceled:
+                    results['canceled'] = True
+                    break
+                
+                item = self.parsed_file.get_item(idx)
+                if not item:
+                    continue
+                
+                text = item.original_text or item.current_text
+                if not text or not text.strip():
+                    self.signals.progress.emit(i + 1, total)
+                    continue
+                
+                try:
+                    translated = ai.translate_with_ai(text, self.model)
+                    
+                    if self._is_canceled:
+                        results['canceled'] = True
+                        break
+                    
+                    if translated and translated.strip():
+                        self.parsed_file.update_item_text(idx, translated)
+                        self.signals.item_updated.emit(idx, translated)
+                        results['success_count'] += 1
+                    else:
+                        results['error_count'] += 1
+                        results['errors'].append(f"Line {item.line_index}: Empty AI response")
+                        
+                except Exception as e:
+                    results['error_count'] += 1
+                    results['errors'].append(f"Line {item.line_index}: {str(e)}")
+                
+                self.signals.progress.emit(i + 1, total)
+                
+                # Throttle between requests
+                if not self._is_canceled:
+                    time.sleep(getattr(config, 'BATCH_AI_DELAY', 0.5))
+            
+            self.signals.finished.emit(results)
+    
+    # Create and connect worker
+    worker = BatchAIWorker(current_file_data, selected_rows_indices, selected_model, translation_controller)
+    
+    def on_progress(current, total):
+        progress.setValue(current)
+    
+    def on_item_updated(idx, text):
+        import gui.gui_table_manager as table_manager
+        table_widget = getattr(current_file_data, 'table_widget', None)
+        if table_widget and 0 <= idx < len(current_file_data.items):
+            table_manager.update_table_item_text(view, table_widget, idx, 4, text)
+            table_manager.update_table_row_style(table_widget, idx, current_file_data.items[idx])
+            current_file_data.is_modified = True
+    
+    def on_finished(results):
+        progress.close()
+        view._set_current_tab_modified(True)
+        
+        summary = f"Batch AI finished.\n\nProcessed: {len(selected_rows_indices)}\n"
+        summary += f"Success: {results['success_count']}\n"
+        summary += f"Errors: {results['error_count']}\n"
+        if results['canceled']:
+            summary += "\nCANCELED BY USER"
+        if results['errors']:
+            summary += "\n\nErrors (max 5):\n" + "\n".join(results['errors'][:5])
+        
+        QMessageBox.information(view, tr("batch_ai_title"), summary)
+        view._update_ui_state()
+    
+    worker.signals.progress.connect(on_progress)
+    worker.signals.item_updated.connect(on_item_updated)
+    worker.signals.finished.connect(on_finished)
+    progress.canceled.connect(worker.cancel)
+    
+    progress.show()
+    QThreadPool.globalInstance().start(worker)
+    view.statusBar().showMessage(tr("batch_starting"), 0)
+
+
 def _handle_file_loaded_legacy(controller: 'AppController', view: 'RenForgeGUI', file_path: str):
     """
     Handle legacy file load event to sync with new architecture.
-    Converts TabData to ParsedFile and updates ProjectModel.
+    Since legacy loader now creates ParsedFile objects, we just need to ensure
+    ProjectModel and other components are aware.
     """
     try:
-        from models.parsed_file import ParsedFile, ParsedItem
-        from renforge_enums import FileMode, ItemType
+        from models.parsed_file import ParsedFile
         
         logger.debug(f"Syncing legacy file load for: {file_path}")
         
@@ -544,57 +737,15 @@ def _handle_file_loaded_legacy(controller: 'AppController', view: 'RenForgeGUI',
             logger.warning(f"File loaded but not found in view.file_data: {file_path}")
             return
 
-        tab_data = view.file_data[file_path]
+        parsed_file = view.file_data[file_path]
         
-        # Convert legacy TabData/dict items to ParsedItem list
-        parsed_items = []
-        if tab_data.items:
-            for item in tab_data.items:
-                # Handle both object and dict item formats (legacy mixed usage)
-                if isinstance(item, dict):
-                    parsed_item = ParsedItem(
-                        line_index=item.get('line_index', -1),
-                        original_text=item.get('original_text', ''),
-                        current_text=item.get('current_text', ''),
-                        initial_text=item.get('initial_text', ''),
-                        type=item.get('type', ItemType.UNKNOWN),
-                        parsed_data=item.get('parsed_data', {}),
-                        context=item.get('context', None),
-                        original_line_index=item.get('original_line_index'),
-                        character_trans=item.get('character_trans'),
-                        block_language=item.get('block_language')
-                    )
-                else:
-                    # Assume it's already a compatible object or has compatible attributes
-                    # If it's the old renforge_models.ParsedItem, it likely has compatible fields
-                    # but check anyway.
-                    parsed_item = ParsedItem(
-                        line_index=getattr(item, 'line_index', -1),
-                        original_text=getattr(item, 'original_text', ''),
-                        current_text=getattr(item, 'current_text', ''),
-                        initial_text=getattr(item, 'initial_text', ''),
-                        type=getattr(item, 'type', ItemType.UNKNOWN),
-                        parsed_data=getattr(item, 'parsed_data', {}),
-                        context=getattr(item, 'context', None),
-                        original_line_index=getattr(item, 'original_line_index', None),
-                        character_trans=getattr(item, 'character_trans', None),
-                        block_language=getattr(item, 'block_language', None)
-                    )
-                parsed_items.append(parsed_item)
+        # Verify it is indeed a ParsedFile (legacy code might have produced it)
+        if not isinstance(parsed_file, ParsedFile):
+            logger.warning(f"  Object in file_data is not ParsedFile: {type(parsed_file)}")
+            # If it were TabData, we'd convert, but TabData is gone.
+            # Assuming gui_file_manager now returns ParsedFile as per refactor.
+            return
 
-        # Create ParsedFile
-        parsed_file = ParsedFile(
-            file_path=file_path,
-            mode=tab_data.mode if hasattr(tab_data, 'mode') else FileMode.DIRECT, # Fallback
-            lines=tab_data.lines,
-            items=parsed_items,
-            breakpoints=tab_data.breakpoints,
-            output_path=getattr(tab_data, 'output_path', file_path),
-            target_language=getattr(tab_data, 'target_language', None),
-            source_language=getattr(tab_data, 'source_language', None),
-            selected_model=getattr(tab_data, 'selected_model', None)
-        )
-        
         # Sync with ProjectModel
         if controller.project.add_file(parsed_file):
             logger.info(f"  [Sync] Added file to ProjectModel: {parsed_file.filename}")

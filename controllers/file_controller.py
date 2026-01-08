@@ -19,7 +19,7 @@ from models.parsed_file import ParsedFile, ParsedItem
 from models.project_model import ProjectModel
 from models.settings_model import SettingsModel
 from renforge_enums import FileMode
-import renforge_parser as parser
+import parser.core as parser
 import renforge_core as core
 
 logger = get_logger("controllers.file")

@@ -75,16 +75,28 @@ def test_smoke_file_open(qtbot, temp_rpy_file: Path):
     # Call the core load logic directly to verify it works
     # This avoids the blocking file dialog
     # load_file(main_window, file_path, selected_mode)
-    file_manager.load_file(view, str(temp_rpy_file), "translate")
+    success = file_manager.load_file(view, str(temp_rpy_file), "translate")
+    assert success is True, f"Failed to load file: {temp_rpy_file}"
     
     # Verify file is loaded
-    assert str(temp_rpy_file) in view.file_data
+    # Verify file is loaded (check normalized paths)
+    view_files_normalized = [os.path.normcase(os.path.normpath(f)) for f in view.file_data.keys()]
+    assert os.path.normcase(os.path.normpath(str(temp_rpy_file))) in view_files_normalized
     
     # Verify state sync (PR-3)
     # Project model should have the file open
     project = controller.project
-    assert project.is_file_open(str(temp_rpy_file))
-    assert project.active_file_path == str(temp_rpy_file)
+    
+    # Normalize paths for comparison (Windows/Linux handling)
+    normalized_temp_path = os.path.normcase(os.path.normpath(str(temp_rpy_file)))
+    
+    # Check if file is open (allowing for potential path variation key)
+    # We check if any open file key matches the normalized path
+    open_files_normalized = [os.path.normcase(os.path.normpath(f)) for f in project.open_files.keys()]
+    assert normalized_temp_path in open_files_normalized
+    
+    # Check active file
+    assert os.path.normcase(os.path.normpath(project.active_file_path)) == normalized_temp_path
     
     # Clean up
     view.close()

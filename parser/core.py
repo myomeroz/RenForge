@@ -6,12 +6,14 @@ Main entry points for parsing, providing backward compatibility
 with the old renforge_parser module.
 """
 
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 from renforge_logger import get_logger
+from renforge_enums import ItemType
 from renforge_models import ParsedItem
 from parser.translate_parser import TranslateParser
 from parser.direct_parser import DirectParser
+from parser.patterns import RenpyPatterns
 
 logger = get_logger("parser.core")
 
@@ -108,6 +110,90 @@ def format_line_from_components(item_data: ParsedItem, new_text: str) -> str:
     
     # Default: simple quoted string
     return f'{indent}{prefix}"{new_text}"{suffix}'
+
+
+def parse_line(line: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse a single line to identify its type and components.
+    Used for 'Insert Line' functionality and ad-hoc parsing.
+    
+    Args:
+        line: The raw line string
+        
+    Returns:
+        Dictionary with parsed data, type, and text, or None if not recognized.
+    """
+    stripped = line.strip()
+    # indent = len(line) - len(line.lstrip(' ')) # Not strictly needed for single line parse unless context matters
+    
+    # Try Dialogue
+    match = RenpyPatterns.DIALOGUE.match(line)
+    if match:
+        character = match.group(2)
+        modifiers = match.group(3) or ""
+        text = match.group(5)
+        suffix = match.group(6)
+        return {
+            'type': ItemType.DIALOGUE,
+            'text': text,
+            'character_tag': character,
+            'indent': match.group(1),
+            'character': character,
+            'modifiers': modifiers,
+            'prefix': f'{character}{modifiers} ',
+            'suffix': suffix,
+            'reconstruction_rule': 'standard'
+        }
+
+    # Try Narration
+    match = RenpyPatterns.NARRATION.match(line)
+    if match:
+        text = match.group(2)
+        suffix = match.group(3)
+        return {
+            'type': ItemType.NARRATION,
+            'text': text,
+            'character_tag': None,
+            'indent': match.group(1),
+            'prefix': '',
+            'suffix': suffix,
+            'reconstruction_rule': 'narration'
+        }
+
+    # Try Screen Text Statement
+    match = RenpyPatterns.SCREEN_TEXT_STMT.match(line)
+    if match:
+        # Extract text from group 3 or 4
+        text = match.group(3) or match.group(4)
+        if text:
+            return {
+                'type': ItemType.SCREEN_TEXT_STATEMENT,
+                'text': text,
+                'character_tag': None,
+                'indent': match.group(1),
+                'keyword': match.group(2),
+                'prefix': f'{match.group(2)} ',
+                'suffix': match.group(5),
+                'reconstruction_rule': 'screen_text_statement'
+            }
+
+    # Try Screen Button
+    match = RenpyPatterns.SCREEN_BUTTON.match(line)
+    if match:
+        text = match.group(3) or match.group(4)
+        if text:
+             return {
+                'type': ItemType.SCREEN_BUTTON,
+                'text': text,
+                'character_tag': None,
+                'indent': match.group(1),
+                'keyword': match.group(2),
+                'prefix': f'{match.group(2)} ',
+                'suffix': match.group(5),
+                'reconstruction_rule': 'screen_button'
+            }
+            
+    return None
 
 
 # Backward compatibility: expose the main parsing function

@@ -272,9 +272,16 @@ class UIBuilder:
         # Batch Google Translate button - ONLY emit signal, handler in app_bootstrap
         self.main.batch_gt_btn = QPushButton(tr("btn_batch_gtranslate"))
         self.main.batch_gt_btn.setIcon(QIcon(config.resource_path("pics/batch.svg")))
-        self.main.batch_gt_btn.setToolTip("Batch translate selected lines")
+        self.main.batch_gt_btn.setToolTip("Batch translate selected lines with Google")
         self.main.batch_gt_btn.clicked.connect(lambda: self.main.batch_google_requested.emit())
         row1.addWidget(self.main.batch_gt_btn)
+        
+        # Batch AI button - ONLY emit signal, handler in app_bootstrap
+        self.main.batch_ai_btn = QPushButton(tr("btn_batch_ai"))
+        self.main.batch_ai_btn.setIcon(QIcon(config.resource_path("pics/ai.svg")))
+        self.main.batch_ai_btn.setToolTip("Batch translate selected lines with Gemini AI")
+        self.main.batch_ai_btn.clicked.connect(lambda: self.main.batch_ai_requested.emit())
+        row1.addWidget(self.main.batch_ai_btn)
         
         self.main.revert_btn = QPushButton(tr("btn_revert"))
         self.main.revert_btn.setIcon(QIcon(config.resource_path("pics/revert.svg")))

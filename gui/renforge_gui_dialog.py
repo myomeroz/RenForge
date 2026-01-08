@@ -18,10 +18,9 @@ except ImportError:
 try:
     import renforge_config as config
     import renforge_core as core
-    import renforge_parser as parser
-    import renforge_parser as parser
+    import parser.core as parser
     from locales import tr
-    from renforge_models import TabData, ParsedItem
+    from models.parsed_file import ParsedItem
     from renforge_enums import ContextType, ItemType
 
     from renforge_ai import (refine_text_with_gemini, GoogleTranslator,
@@ -52,7 +51,7 @@ class AIEditDialog(QDialog):
 
         self.item: ParsedItem = current_items[item_index]
         self.char_tag = self.item.character_tag or self.item.character_trans
-        self.current_file_data: TabData = parent._get_current_file_data() 
+        self.current_file_data = parent._get_current_file_data() 
 
         if not self.current_file_data:
             QMessageBox.critical(parent, tr("error_data"), tr("error_data_file", index=item_index))

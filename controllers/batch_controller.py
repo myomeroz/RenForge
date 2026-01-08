@@ -11,7 +11,7 @@ from PyQt6.QtCore import QObject, pyqtSlot
 from PyQt6.QtWidgets import QMessageBox
 
 from locales import tr
-import renforge_parser as parser
+import parser.core as parser
 import gui.gui_table_manager as table_manager
 
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from renforge_logger import get_logger
 from renforge_enums import ContextType, ItemType
-from renforge_models import ParsedItem
+from models.parsed_file import ParsedItem
 
 logger = get_logger("parser.base")
 
@@ -116,7 +116,7 @@ class BaseParser(ABC):
             current_text=current_text,
             initial_text=current_text,
             type=item_type,
-            context_type=context,
+            context=context,
             parsed_data=parsed_data,
         )
     

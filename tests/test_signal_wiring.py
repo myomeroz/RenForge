@@ -99,7 +99,7 @@ class TestFileControllerSignals:
         """Test that file_opened signal is emitted on successful open."""
         pytest.importorskip("PyQt6.QtCore")
         
-        from PyQt6.QtCore import QSignalSpy
+        from PyQt6.QtTest import QSignalSpy
         
         spy = QSignalSpy(file_controller.file_opened)
         
@@ -114,7 +114,7 @@ class TestFileControllerSignals:
         """Test that file_error signal is emitted for invalid file."""
         pytest.importorskip("PyQt6.QtCore")
         
-        from PyQt6.QtCore import QSignalSpy
+        from PyQt6.QtTest import QSignalSpy
         
         spy = QSignalSpy(file_controller.file_error)
         

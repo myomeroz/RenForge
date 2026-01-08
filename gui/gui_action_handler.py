@@ -18,14 +18,14 @@ except ImportError:
 import renforge_config as config
 import renforge_core as core
 import renforge_ai as ai
-import renforge_parser as parser
+import parser.core as parser
 
 from gui.renforge_gui_dialog import (AIEditDialog, GoogleTranslateDialog, InsertLineDialog)
 
 import gui.gui_settings_manager as settings_manager
 import gui.gui_table_manager as table_manager 
 from locales import tr 
-from renforge_models import TabData, ParsedItem
+from models.parsed_file import ParsedItem
 from dataclasses import replace, asdict 
 
 class WorkerSignals(QObject):
@@ -428,39 +428,6 @@ def batch_translate_google(main_window):
 
     QThreadPool.globalInstance().start(worker)
 
-    main_window.statusBar().showMessage(tr("batch_starting"), 0) 
-
-    items_copy = [replace(item) for item in current_items] 
-    lines_copy = list(current_file_lines) 
-
-    worker_signals = WorkerSignals()
-    worker = BatchTranslateWorker(
-        signals=worker_signals,
-        selected_indices=selected_rows_indices,
-        items_data_copy=items_copy, 
-        lines_copy=lines_copy, 
-        source_code=source_code,
-        target_code=target_code,
-        mode=current_mode
-    )
-
-    worker_signals.progress.connect(progress.setValue)
-
-    worker_signals.item_updated.connect(main_window._handle_batch_item_updated)
-
-    worker_signals.error_occurred.connect(main_window._handle_batch_translate_error)
-    worker_signals.variables_warning.connect(main_window._handle_batch_translate_warning)
-
-    worker_signals.finished.connect(main_window._handle_batch_translate_finished)
-    worker_signals.finished.connect(progress.close) 
-
-    worker_signals.request_mark_modified.connect(main_window._mark_tab_modified_from_worker)
-
-    progress.canceled.connect(worker.cancel)
-
-    main_window._clear_batch_results()
-
-    QThreadPool.globalInstance().start(worker)
 
     progress.show()
     main_window.statusBar().showMessage(tr("batch_starting"), 0) 

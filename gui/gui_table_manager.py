@@ -17,8 +17,8 @@ except ImportError:
 
 import renforge_config as config
 import renforge_core as core 
-import renforge_parser as parser
-from renforge_models import TabData, ParsedItem
+import parser.core as parser
+from models.parsed_file import ParsedFile, ParsedItem
 from renforge_enums import ItemType
 
 def create_table_widget(main_window):
@@ -60,7 +60,7 @@ def populate_table(table_widget: QTableWidget, items_list: list, mode: str):
         variable_name = item.variable_name 
 
         display_tag = ""
-        if item_type == parser.CONTEXT_VARIABLE:
+        if item_type == ItemType.VARIABLE:
             display_tag = variable_name or '?' 
             item_type_display = "var" 
         elif item_type == 'dialogue':

@@ -11,7 +11,6 @@ from PyQt6.QtCore import QObject, pyqtSlot
 from PyQt6.QtWidgets import QMessageBox
 
 from locales import tr
-import renforge_parser as parser
 import gui.gui_table_manager as table_manager
 
 
@@ -88,30 +87,7 @@ class BatchController(QObject):
         table_manager.update_table_item_text(self.main, table_widget, item_index, 4, translated_text)
         table_manager.update_table_row_style(table_widget, item_index, original_item_data)
         
-        # Update file lines for 'translate' mode
-        update_line_error = False
-        if current_mode == 'translate':
-            line_index_to_update = getattr(original_item_data, 'line_index', None)
-            parsed_data_from_signal = updated_item_data_copy.get('parsed_data')
-            
-            if line_index_to_update is not None and 0 <= line_index_to_update < len(current_lines):
-                if parsed_data_from_signal:
-                    new_line = parser.format_line_from_components(updated_item_data_copy, translated_text)
-                    if new_line is not None:
-                        current_lines[line_index_to_update] = new_line
-                    else:
-                        update_line_error = True
-                        logger.error(f"Failed to format line for file index {line_index_to_update}")
-                else:
-                    update_line_error = True
-                    logger.error(f"Missing 'parsed_data' in data for item {item_index}")
-            else:
-                update_line_error = True
-                logger.error(f"Invalid line index {line_index_to_update} for item {item_index}")
-            
-            if update_line_error:
-                err_detail = f"- Error updating file line {line_index_to_update+1} for item {item_index+1}"
-                self._errors.append(err_detail)
+        # Note: File line reconstruction is now handled at save-time by FileController
     
     @pyqtSlot(str)
     def handle_error(self, details: str):

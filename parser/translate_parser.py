@@ -9,7 +9,7 @@ from typing import List, Tuple, Optional
 
 from renforge_logger import get_logger
 from renforge_enums import ContextType, ItemType
-from renforge_models import ParsedItem
+from models.parsed_file import ParsedItem
 from parser.base import BaseParser
 from parser.patterns import RenpyPatterns
 
@@ -99,6 +99,7 @@ class TranslateParser(BaseParser):
                     'prefix': 'new ',
                     'suffix': suffix,
                     'old_line_index': self._pending_old_line,
+                    'reconstruction_rule': 'translate_new',
                 }
             )
             self._items.append(item)
@@ -127,12 +128,12 @@ class TranslateParser(BaseParser):
                 line_index=line_index,
                 original_text=text,
                 current_text=text,
-                item_type=ItemType.DIALOGUE,
+                item_type=ItemType.TRANSLATE_POTENTIAL_ORIGINAL,
                 context=self._current_context,
                 parsed_data={
                     'character': character,
-                    'is_comment': True,
-                    'prefix': '',
+                    'original_full_comment_content': comment_content,
+                    'reconstruction_rule': 'translate_potential_original',
                 }
             )
             self._items.append(item)
@@ -147,11 +148,11 @@ class TranslateParser(BaseParser):
                 line_index=line_index,
                 original_text=text,
                 current_text=text,
-                item_type=ItemType.NARRATION,
+                item_type=ItemType.TRANSLATE_POTENTIAL_ORIGINAL,
                 context=self._current_context,
                 parsed_data={
-                    'is_comment': True,
-                    'prefix': '',
+                    'original_full_comment_content': comment_content,
+                    'reconstruction_rule': 'translate_potential_original',
                 }
             )
             self._items.append(item)

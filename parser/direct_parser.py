@@ -9,7 +9,7 @@ from typing import List, Tuple, Optional
 
 from renforge_logger import get_logger
 from renforge_enums import ContextType, ItemType
-from renforge_models import ParsedItem
+from models.parsed_file import ParsedItem
 from parser.base import BaseParser
 from parser.patterns import RenpyPatterns
 
@@ -21,7 +21,7 @@ NON_TEXT_KEYWORDS = {
     'play', 'queue', 'stop', 'show', 'scene', 'hide', 'with', 'window', 'image',
     'movie', 'voice', 'sound', 'music', 'style', 'transform', 'animation',
     'call', 'jump', 'return', '$', 'init', 'python', 'label', 'screen', 'menu',
-    'if', 'while', 'for', 'pass'
+    'if', 'while', 'for', 'pass', 'add'
 }
 
 
@@ -82,13 +82,13 @@ class DirectParser(BaseParser):
             return
         
         # Try to match text patterns
+        if self._try_menu_choice(line_index, line, stripped, indent):
+            return
+
         if self._try_dialogue(line_index, line, stripped, indent):
             return
         
         if self._try_narration(line_index, line, stripped, indent):
-            return
-        
-        if self._try_menu_choice(line_index, line, stripped, indent):
             return
         
         if self._current_context == ContextType.SCREEN:
@@ -144,6 +144,7 @@ class DirectParser(BaseParser):
                     'modifiers': modifiers,
                     'prefix': f'{character}{modifiers} ',
                     'suffix': suffix,
+                    'reconstruction_rule': 'standard',
                 }
             )
             self._items.append(item)
@@ -167,6 +168,7 @@ class DirectParser(BaseParser):
                     'indent': match.group(1),
                     'prefix': '',
                     'suffix': suffix,
+                    'reconstruction_rule': 'narration',
                 }
             )
             self._items.append(item)
@@ -187,12 +189,13 @@ class DirectParser(BaseParser):
                 line_index=line_index,
                 original_text=text,
                 current_text=text,
-                item_type=ItemType.MENU,
+                item_type=ItemType.CHOICE,
                 context=ContextType.MENU,
                 parsed_data={
                     'indent': match.group(1),
                     'prefix': '',
                     'suffix': suffix,
+                    'reconstruction_rule': 'choice',
                 }
             )
             self._items.append(item)
@@ -210,13 +213,14 @@ class DirectParser(BaseParser):
                     line_index=line_index,
                     original_text=text,
                     current_text=text,
-                    item_type=ItemType.SCREEN,
+                    item_type=ItemType.SCREEN_TEXT_STATEMENT,
                     context=ContextType.SCREEN,
                     parsed_data={
                         'indent': match.group(1),
                         'keyword': match.group(2),
                         'prefix': f'{match.group(2)} ',
                         'suffix': match.group(5),
+                        'reconstruction_rule': 'screen_text_statement',
                     }
                 )
                 self._items.append(item)
@@ -231,13 +235,14 @@ class DirectParser(BaseParser):
                     line_index=line_index,
                     original_text=text,
                     current_text=text,
-                    item_type=ItemType.SCREEN,
+                    item_type=ItemType.SCREEN_BUTTON,
                     context=ContextType.SCREEN,
                     parsed_data={
                         'indent': match.group(1),
                         'keyword': match.group(2),
                         'prefix': f'{match.group(2)} ',
                         'suffix': match.group(5),
+                        'reconstruction_rule': 'screen_button',
                     }
                 )
                 self._items.append(item)

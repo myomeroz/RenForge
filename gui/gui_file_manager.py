@@ -40,7 +40,7 @@ import renforge_core as core
 import renforge_ai as ai
 from renforge_exceptions import SaveError
 from locales import tr
-from renforge_models import TabData, ParsedItem
+from models.parsed_file import ParsedFile, ParsedItem
 from renforge_enums import FileMode, ContextType, ItemType
 
 from gui.renforge_gui_dialog import ModeSelectionDialog
@@ -269,8 +269,8 @@ def load_file(main_window, file_path, selected_mode):
         if lines is None or items is None or breakpoints is None:
             raise Exception(f"Core parsing function failed for '{base_name}'. See console.")
 
-        # Create TabData object
-        tab_data = TabData(
+        # Create ParsedFile object
+        tab_data = ParsedFile(
             file_path=file_path,
             mode=FileMode(selected_mode),
             lines=lines,
@@ -338,7 +338,7 @@ def save_changes(main_window):
         main_window.statusBar().showMessage(tr("no_active_tab_save"), 3000)
         return False
 
-    # current_data is now TabData object
+    # current_data is now ParsedFile object
     file_path_to_save = current_data.output_path
     if not file_path_to_save:
 

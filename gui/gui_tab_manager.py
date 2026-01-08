@@ -14,7 +14,7 @@ except ImportError:
     sys.exit(1)
 
 import renforge_config as config
-from renforge_models import TabData
+from models.parsed_file import ParsedFile
 
 def add_new_tab(main_window, file_path, table_widget: QTableWidget, tab_name):
     tab_index = main_window.tab_widget.addTab(table_widget, tab_name)
@@ -56,7 +56,7 @@ def handle_tab_changed(main_window, index):
         main_window._display_current_item_status()
         return
 
-    file_data: TabData = main_window.file_data.get(file_path)
+    file_data: ParsedFile = main_window.file_data.get(file_path)
     if not file_data:
         logger.critical(f"handle_tab_changed - Data for path '{file_path}' (Index: {index}) not found in file_data!")
 
@@ -108,7 +108,7 @@ def close_tab(main_window, index):
         logger.warning(f"No file path found in tab_data for index {index}. Closing tab anyway.")
 
     elif file_path in main_window.file_data:
-        file_data: TabData = main_window.file_data[file_path]
+        file_data: ParsedFile = main_window.file_data[file_path]
         if file_data.is_modified:
             base_name = os.path.basename(file_data.output_path or file_path)
             msg_box = QMessageBox(main_window)
@@ -145,10 +145,9 @@ def close_tab(main_window, index):
         logger.debug(f"Removing data for {file_path} from file_data...")
         try:
 
-            data_entry: TabData = main_window.file_data[file_path]
-            data_entry.items.clear()
-            data_entry.lines.clear()
-            data_entry.breakpoints.clear()
+            data_entry: ParsedFile = main_window.file_data[file_path]
+            # No need to manually clear items/lines/breakpoints since ParsedFile manages its own state
+            # and proper garbage collection will handle it when references are dropped.
 
             # Dynamic attribute cleanup
             if hasattr(data_entry, 'table_widget'):
