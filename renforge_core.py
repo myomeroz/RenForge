@@ -163,6 +163,23 @@ def load_and_parse_translate_file(input_path):
                 last_old_item = None
 
         elif item_context == ContextType.TRANSLATE:
+            # NEW FORMAT: Parser already paired comment+dialogue into DIALOGUE items
+            # with original_text and current_text set correctly
+            if item_type == ItemType.DIALOGUE:
+                rec_rule = item.parsed_data.get('reconstruction_rule', '')
+                # Items from new parser format (translate_dialogue or translate_new)
+                if rec_rule in ('translate_dialogue', 'translate_new'):
+                    # Already a complete paired item from new parser
+                    final_item = replace(item,
+                        type=ItemType("dialogue"),
+                        is_modified_session=False,
+                        initial_text=item.current_text,
+                        block_language=item_lang or detected_language
+                    )
+                    parsed_translatable_items.append(final_item)
+                    continue
+            
+            # OLD FORMAT: Handle potential original (comment) waiting for translation line
             if item_type == ItemType.TRANSLATE_POTENTIAL_ORIGINAL:
 
                 last_original_comment_item = item
