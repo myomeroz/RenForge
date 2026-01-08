@@ -605,7 +605,7 @@ def _handle_batch_ai(view: 'RenForgeGUI'):
     progress.setAutoReset(False)
     
     # Use TranslationController
-    translation_controller = view._app_controller.translation if hasattr(view._app_controller, 'translation') else None
+    translation_controller = view._app_controller.translation_controller if hasattr(view._app_controller, 'translation_controller') else None
     
     if translation_controller is None:
         logger.error("TranslationController not available")
