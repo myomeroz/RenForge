@@ -230,16 +230,8 @@ def batch_translate_google(main_window):
     # Let's define a local adapter lambda.
     # But item_data is in current_file_data.
     
-    def on_item_updated(idx, text):
-        try:
-            item = current_file_data.get_item(idx)
-            if item:
-                main_window._handle_batch_item_updated(idx, text, item)
-        except Exception as e:
-            logger.error(f"Error handling batch update for item {idx}: {e}")
-
     signals.progress.connect(progress.setValue)
-    signals.item_updated.connect(on_item_updated)
+    signals.item_updated.connect(main_window._handle_batch_item_updated)
     
     # error_occurred sig in old worker is string. Controller: ???
     # Controller uses 'BatchAIWorkerSignals' which has 'error = pyqtSignal(str)'?
@@ -359,31 +351,23 @@ def batch_translate_ai(main_window):
         return
 
     # 6. Wire Signals (Adapters)
-    def on_item_updated(idx, text):
-        table_widget = getattr(current_file_data, 'table_widget', None)
-        if table_widget and 0 <= idx < len(current_file_data.items):
-             table_manager.update_table_item_text(main_window, table_widget, idx, 4, text)
-             table_manager.update_table_row_style(table_widget, idx, current_file_data.items[idx])
-             current_file_data.is_modified = True
-
-    def on_finished(results):
-        progress.close()
-        main_window._set_current_tab_modified(True)
-        
-        summary = f"Batch AI finished.\n\nProcessed: {len(selected_rows_indices)}\n"
-        summary += f"Success: {results['success_count']}\n"
-        summary += f"Errors: {results['error_count']}\n"
-        if results['canceled']:
-            summary += "\nCANCELED BY USER"
-        if results['errors']:
-            summary += "\n\nErrors (max 5):\n" + "\n".join(results['errors'][:5])
-        
-        QMessageBox.information(main_window, tr("batch_ai_title"), summary)
-        main_window._update_ui_state()
-
+    # 6. Wire Signals (Adapters)
+    # Fix P0 Bug #2: Route updates through main_window handler to ensure BatchController logic (state, modification flags) is used.
+    
+    # Use main_window handlers for standard events
     signals.progress.connect(progress.setValue)
-    signals.item_updated.connect(on_item_updated)
-    signals.finished.connect(on_finished)
+    
+    # Connect directly to main_window slot. 
+    # Since signals.item_updated now matches (int, str, dict) and main_window is in Main Thread,
+    # This will automatically use a QueuedConnection, ensuring thread safety (UI updates on main thread).
+    signals.item_updated.connect(main_window._handle_batch_item_updated)
+    
+    # Connect error and finished signals to main_window handlers for consistent behavior
+    signals.error.connect(main_window._handle_batch_translate_error)
+    signals.finished.connect(main_window._handle_batch_translate_finished)
+    
+    # Also close progress on finish
+    signals.finished.connect(progress.close)
     progress.canceled.connect(worker.cancel)
     
     progress.show()

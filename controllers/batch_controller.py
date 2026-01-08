@@ -8,7 +8,7 @@ from renforge_logger import get_logger
 logger = get_logger("controllers.batch_controller")
 
 from PyQt6.QtCore import QObject, pyqtSlot
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QMessageBox, QTableWidget
 
 from locales import tr
 import parser.core as parser
@@ -54,7 +54,7 @@ class BatchController(QObject):
     def warnings(self):
         return self._warnings
     
-    @pyqtSlot(int, str)
+    @pyqtSlot(int, str, dict)
     def handle_item_updated(self, item_index: int, translated_text: str, updated_item_data_copy: dict = None):
         """
         Handle batch item update signal from worker.
@@ -62,20 +62,50 @@ class BatchController(QObject):
         Args:
             item_index: Index of the item being updated
             translated_text: The translated text
-            updated_item_data_copy: Optional copy of item data (legacy/Google support)
+            updated_item_data_copy: Optional data dict, may contain 'file_path'
         """
-        current_file_data = self.main._get_current_file_data()
+        updated_item_data_copy = updated_item_data_copy or {}
+        file_path = updated_item_data_copy.get('file_path')
+        
+        current_file_data = None
+        if file_path and file_path in self.main.file_data:
+             current_file_data = self.main.file_data[file_path]
+        else:
+             current_file_data = self.main._get_current_file_data()
+        
         if not current_file_data:
+            logger.error(f"Batch update failed: Could not find file data for {file_path or 'current'}")
             return
         
         current_items = current_file_data.items
         current_lines = current_file_data.lines
         current_mode = current_file_data.mode
+        
+        # Robustly find table widget
         table_widget = getattr(current_file_data, 'table_widget', None)
         
-        if not table_widget or not current_items or not current_lines or not current_mode:
+        # Fallback: Find tab with this file path if model reference is missing
+        if not table_widget:
+             for i in range(self.main.tab_widget.count()):
+                 if self.main.tab_data.get(i) == current_file_data.file_path:
+                      widget = self.main.tab_widget.widget(i)
+                      if isinstance(widget, QTableWidget):
+                           table_widget = widget
+                           # Cache it back to model to save future lookups
+                           current_file_data.table_widget = table_widget
+                           logger.info(f"Restored missing table_widget reference for {current_file_data.file_path}")
+                      break
+        
+        if not table_widget:
+            logger.error(f"Batch update failed: Valid file data but NO table widget found for {current_file_data.file_path}")
             return
+
+        if not current_items or not current_lines or not current_mode:
+            logger.error("Batch update failed: Missing items/lines/mode in file data")
+            return
+            
         if not (0 <= item_index < len(current_items)):
+            logger.error(f"Batch update failed: Index {item_index} out of bounds (len: {len(current_items)})")
             return
         
         # Update item data
@@ -85,8 +115,11 @@ class BatchController(QObject):
         current_file_data.is_modified = True
         
         # Update table display
-        table_manager.update_table_item_text(self.main, table_widget, item_index, 4, translated_text)
-        table_manager.update_table_row_style(table_widget, item_index, original_item_data)
+        try:
+             table_manager.update_table_item_text(self.main, table_widget, item_index, 4, translated_text)
+             table_manager.update_table_row_style(table_widget, item_index, original_item_data)
+        except Exception as e:
+             logger.error(f"Batch update table UI failed: {e}")
         
         # Update file lines for 'translate' mode
         update_line_error = False

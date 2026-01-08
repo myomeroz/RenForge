@@ -31,7 +31,9 @@ logger = get_logger("controllers.translation")
 class BatchAIWorkerSignals(QObject):
     """Signals for the BatchAIWorker."""
     progress = pyqtSignal(int, int)
-    item_updated = pyqtSignal(int, str)
+    # Update signal signature to match RenForgeGUI/BatchController slot for direct connection
+    # (int, str, dict) -> index, text, item_data
+    item_updated = pyqtSignal(int, str, dict)
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
 
@@ -102,7 +104,8 @@ class BatchAIWorker(QRunnable):
                 if translated and str(translated).strip():
                     # Update file model
                     self.parsed_file.update_item_text(idx, translated)
-                    self.signals.item_updated.emit(idx, translated)
+                    # Emit with file_path for robust context resolution
+                    self.signals.item_updated.emit(idx, translated, {'file_path': self.parsed_file.file_path})
                     results['success_count'] += 1
                 else:
                     results['error_count'] += 1
@@ -186,7 +189,8 @@ class BatchGoogleWorker(QRunnable):
                 
                 if translated:
                     self.parsed_file.update_item_text(idx, translated)
-                    self.signals.item_updated.emit(idx, translated)
+                    # Emit with file_path for robust context resolution
+                    self.signals.item_updated.emit(idx, translated, {'file_path': self.parsed_file.file_path})
                     results['success_count'] += 1
                 else:
                     results['error_count'] += 1

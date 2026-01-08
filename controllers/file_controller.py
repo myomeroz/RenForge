@@ -311,10 +311,17 @@ class FileController(QObject):
         indent = pd.get('indent', '')
         prefix = pd.get('prefix', '')
         suffix = pd.get('suffix', '')
-        
-        text = item.current_text
-        
-        # Basic reconstruction - can be extended for different item types
+        text = item.current_text or ""
+
+        # Use robust parser reconstruction to preserve character tags (Fix P0 Bug #1)
+        try:
+            formatted = parser.format_line_from_components(item, text)
+            if formatted is not None:
+                return formatted
+        except Exception as e:
+            logger.warning(f"Parser reconstruction failed for item {item.line_index}: {e}. Falling back.")
+
+        # Fallback to basic reconstruction if parser fails
         return f'{indent}{prefix}"{text}"{suffix}'
     
     # =========================================================================
