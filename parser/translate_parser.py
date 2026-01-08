@@ -2,7 +2,7 @@
 """
 Translate Mode Parser
 
-Parser for Ren'Py translation files (translate blocks with old/new pairs).
+Parser for Ren'Py translation files (translate blocks with old/new pairs or comment/dialogue pairs).
 """
 
 from typing import List, Tuple, Optional
@@ -20,11 +20,16 @@ class TranslateParser(BaseParser):
     """
     Parser for translation mode files.
     
-    Handles files with translate blocks containing old/new string pairs.
-    Example:
-        translate turkish start_label:
+    Handles two formats:
+    1. Traditional old/new pairs:
+        translate turkish label_id:
             old "Hello"
             new "Merhaba"
+    
+    2. Comment/dialogue pairs (Ren'Py generated):
+        translate turkish label_id:
+        #   character "Hello"
+            character "Merhaba"
     """
     
     def __init__(self):
@@ -32,6 +37,8 @@ class TranslateParser(BaseParser):
         self._detected_language: Optional[str] = None
         self._pending_old_text: Optional[str] = None
         self._pending_old_line: Optional[int] = None
+        self._pending_original_from_comment: Optional[str] = None
+        self._pending_comment_line: Optional[int] = None
     
     def can_parse(self, lines: List[str]) -> bool:
         """Check if file contains translate blocks."""
@@ -72,6 +79,10 @@ class TranslateParser(BaseParser):
             self._current_context = ContextType.TRANSLATE
             return
         
+        # =================================
+        # FORMAT 1: old/new pairs
+        # =================================
+        
         # Handle old line
         match = RenpyPatterns.TRANSLATE_OLD.match(line)
         if match:
@@ -109,53 +120,76 @@ class TranslateParser(BaseParser):
             self._pending_old_line = None
             return
         
-        # Handle comment-style translation (# dialogue)
-        if stripped.startswith('#'):
-            self._process_comment_line(line_index, line, stripped)
-    
-    def _process_comment_line(self, line_index: int, line: str, stripped: str):
-        """Process a comment line that may contain dialogue."""
-        # Extract content after #
-        comment_content = stripped[1:].strip()
+        # =================================
+        # FORMAT 2: Comment/dialogue pairs
+        # (Ren'Py generated translation files)
+        # =================================
         
-        # Try to match dialogue pattern
-        match = RenpyPatterns.DIALOGUE_COMMENT.match(comment_content)
-        if match:
-            character = match.group(1)
-            text = match.group(4)
+        # Handle comment line with dialogue (original text)
+        # Format: #   character_id "text" or # "text"
+        if stripped.startswith('#'):
+            comment_content = stripped[1:].lstrip()
             
-            item = self._create_item(
-                line_index=line_index,
-                original_text=text,
-                current_text=text,
-                item_type=ItemType.TRANSLATE_POTENTIAL_ORIGINAL,
-                context=self._current_context,
-                parsed_data={
-                    'character': character,
-                    'original_full_comment_content': comment_content,
-                    'reconstruction_rule': 'translate_potential_original',
-                }
-            )
-            self._items.append(item)
+            # Try to extract text from comment
+            original_text = self._extract_text_from_comment(comment_content)
+            if original_text is not None:
+                self._pending_original_from_comment = original_text
+                self._pending_comment_line = line_index
             return
         
-        # Try narration pattern
-        match = RenpyPatterns.NARRATION_COMMENT.match(comment_content)
-        if match:
-            text = match.group(1)
+        # Handle dialogue line after comment (translated text)
+        # Format:     character_id "text" or "text"
+        if self._pending_original_from_comment is not None:
+            translated_text = self._extract_text_from_dialogue(line)
             
-            item = self._create_item(
-                line_index=line_index,
-                original_text=text,
-                current_text=text,
-                item_type=ItemType.TRANSLATE_POTENTIAL_ORIGINAL,
-                context=self._current_context,
-                parsed_data={
-                    'original_full_comment_content': comment_content,
-                    'reconstruction_rule': 'translate_potential_original',
-                }
-            )
-            self._items.append(item)
+            if translated_text is not None:
+                item = self._create_item(
+                    line_index=line_index,
+                    original_text=self._pending_original_from_comment,
+                    current_text=translated_text,
+                    item_type=ItemType.DIALOGUE,
+                    context=self._current_context,
+                    parsed_data={
+                        'indent': line[:len(line) - len(line.lstrip())],
+                        'original_line': line,
+                        'comment_line_index': self._pending_comment_line,
+                        'reconstruction_rule': 'translate_dialogue',
+                    }
+                )
+                self._items.append(item)
+                
+                # Clear pending
+                self._pending_original_from_comment = None
+                self._pending_comment_line = None
+                return
+    
+    def _extract_text_from_comment(self, content: str) -> Optional[str]:
+        """Extract quoted text from a comment line."""
+        # Try dialogue pattern: character_id [modifiers] "text"
+        match = RenpyPatterns.DIALOGUE_COMMENT.match(content)
+        if match:
+            return match.group(4)
+        
+        # Try narration pattern: "text"
+        match = RenpyPatterns.NARRATION_COMMENT.match(content)
+        if match:
+            return match.group(1)
+        
+        return None
+    
+    def _extract_text_from_dialogue(self, line: str) -> Optional[str]:
+        """Extract quoted text from a dialogue line."""
+        # Try dialogue pattern
+        match = RenpyPatterns.DIALOGUE.match(line)
+        if match:
+            return match.group(5)
+        
+        # Try narration pattern
+        match = RenpyPatterns.NARRATION.match(line)
+        if match:
+            return match.group(2)
+        
+        return None
     
     def reset(self):
         """Reset parser state."""
@@ -163,3 +197,6 @@ class TranslateParser(BaseParser):
         self._detected_language = None
         self._pending_old_text = None
         self._pending_old_line = None
+        self._pending_original_from_comment = None
+        self._pending_comment_line = None
+
