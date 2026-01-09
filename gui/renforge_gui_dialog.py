@@ -156,8 +156,10 @@ class AIEditDialog(QDialog):
                 self.edit_mode
             )
 
-            source_lang = self.current_file_data.source_language or config.DEFAULT_SOURCE_LANG
-            target_lang = self.current_file_data.target_language or config.DEFAULT_TARGET_LANG
+            source_lang = self.parent.source_lang_combo.currentData() or config.DEFAULT_SOURCE_LANG
+            target_lang = self.parent.target_lang_combo.currentData() or config.DEFAULT_TARGET_LANG
+            
+            logger.debug(f"[AIEditDialog._send_request] Using source_lang='{source_lang}', target_lang='{target_lang}' from UI combos")
 
             logger.debug(f"[AIEditDialog._send_request] Calling refine_text_with_gemini...") 
             refined_text, error_msg = refine_text_with_gemini(
