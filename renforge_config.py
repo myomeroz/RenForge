@@ -3,14 +3,14 @@ import os, sys
 from pathlib import Path
 
 def resource_path(relative_path):
-
+    """Get absolute path to resource, works for dev and for PyInstaller."""
     try:
-
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
-    except Exception:
-
-        base_path = os.path.abspath("test/") 
-
+    except AttributeError:
+        # Development mode: use directory containing this config file (project root)
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    
     return os.path.join(base_path, relative_path)
 
 VERSION = "0.3.10-ALPHA"

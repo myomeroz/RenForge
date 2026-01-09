@@ -25,7 +25,7 @@ try:
 
     from renforge_ai import (refine_text_with_gemini, GoogleTranslator,
                             load_api_key, save_api_key, _lazy_import_translator, 
-                            get_google_languages, no_ai, gemini_model,
+                            get_google_languages, get_available_models, no_ai, gemini_model,
                             _available_models_cache)
 
     from renforge_settings import load_settings, save_settings
@@ -762,16 +762,31 @@ class SettingsDialog(QDialog):
         defaults_layout.addWidget(self.default_target_lang_combo, 1, 1)
 
         defaults_layout.addWidget(QLabel(tr("settings_gemini_model")), 2, 0)
+        
+        # Model combo with refresh button
+        model_row = QHBoxLayout()
         self.default_model_combo = QComboBox()
-        self.default_model_combo.addItem("None") 
-        if self.models:
-             self.default_model_combo.addItems(self.models)
-             idx = self.default_model_combo.findText(self.current_default_model if self.current_default_model else "")
-             self.default_model_combo.setCurrentIndex(idx if idx != -1 else 0) 
+        self.default_model_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        model_row.addWidget(self.default_model_combo)
+        
+        self.refresh_models_btn = QPushButton("↻")
+        self.refresh_models_btn.setFixedWidth(30)
+        self.refresh_models_btn.setToolTip("Refresh model list from API")
+        self.refresh_models_btn.clicked.connect(self._refresh_models)
+        model_row.addWidget(self.refresh_models_btn)
+        
+        defaults_layout.addLayout(model_row, 2, 1)
+        
+        # Use current active model from parent window as priority, fall back to settings default
+        self.parent_window = parent
+        active_model = parent.selected_model if parent and hasattr(parent, 'selected_model') else None
+        self.model_to_select = active_model if active_model else self.current_default_model
+        
+        # Auto-refresh models on dialog open if list is empty
+        if not self.models:
+            QTimer.singleShot(100, self._refresh_models)
         else:
-             self.default_model_combo.addItem("Models not loaded")
-             self.default_model_combo.setEnabled(False)
-        defaults_layout.addWidget(self.default_model_combo, 2, 1)
+            self._populate_model_combo()
 
         layout.addWidget(defaults_group)
 
@@ -844,5 +859,51 @@ class SettingsDialog(QDialog):
     def get_selected_mode_method(self):
 
         return "manual" if self.manual_mode_radio.isChecked() else "auto"
+
+    def _refresh_models(self):
+        """Refresh model list from Gemini API."""
+        self.refresh_models_btn.setEnabled(False)
+        self.refresh_models_btn.setText("...")
+        self.default_model_combo.clear()
+        self.default_model_combo.addItem("(loading...)")
+        QApplication.processEvents()
+        
+        try:
+            # Force refresh from API
+            models = get_available_models(force_refresh=True)
+            self.models = models if models else []
+            self._populate_model_combo()
+        except Exception as e:
+            logger.error(f"Failed to refresh models: {e}")
+            self.default_model_combo.clear()
+            self.default_model_combo.addItem("None")
+            self.default_model_combo.addItem(f"(error: {e})")
+        finally:
+            self.refresh_models_btn.setEnabled(True)
+            self.refresh_models_btn.setText("↻")
+
+    def _populate_model_combo(self):
+        """Populate model combo with cached models."""
+        current_selection = self.default_model_combo.currentText()
+        self.default_model_combo.clear()
+        self.default_model_combo.addItem("None")
+        
+        if self.models:
+            self.default_model_combo.addItems(self.models)
+            # Select the active model
+            if self.model_to_select:
+                idx = self.default_model_combo.findText(self.model_to_select)
+                if idx != -1:
+                    self.default_model_combo.setCurrentIndex(idx)
+                else:
+                    # Model not in list, add it anyway
+                    self.default_model_combo.addItem(self.model_to_select)
+                    self.default_model_combo.setCurrentText(self.model_to_select)
+            else:
+                self.default_model_combo.setCurrentIndex(0)
+        else:
+            if self.model_to_select:
+                self.default_model_combo.addItem(self.model_to_select)
+                self.default_model_combo.setCurrentText(self.model_to_select)
 
 logger.debug("gui/renforge_gui_dialogs.py loaded")

@@ -1,8 +1,12 @@
+# -*- coding: utf-8 -*-
 """
 RenForge Merkezi Logging Modülü
 
 Tüm uygulama için standart logging yapılandırması sağlar.
 Log dosyaları ~/.renforge/logs/ dizininde saklanır.
+
+FIX: Handlers are only configured on the root 'renforge' logger.
+Child loggers propagate to root and do not add handlers themselves.
 """
 
 import logging
@@ -21,25 +25,21 @@ LOG_FILE = LOG_DIR / f"renforge_{datetime.now().strftime('%Y%m%d')}.log"
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+# Flag to track if root logger is configured
+_root_configured = False
 
-def setup_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
-    """
-    Belirtilen isimle bir logger oluşturur veya mevcut olanı döndürür.
+
+def _configure_root_logger():
+    """Configure the root 'renforge' logger with handlers (once only)."""
+    global _root_configured
+    if _root_configured:
+        return
     
-    Args:
-        name: Logger adı (genellikle modül adı)
-        level: Log seviyesi (varsayılan: DEBUG)
+    root_logger = logging.getLogger("renforge")
+    root_logger.setLevel(logging.DEBUG)
     
-    Returns:
-        Yapılandırılmış Logger nesnesi
-    """
-    logger = logging.getLogger(name)
-    
-    # Eğer handler zaten eklenmişse tekrar ekleme
-    if logger.handlers:
-        return logger
-    
-    logger.setLevel(level)
+    # Prevent propagation to Python's root logger to avoid duplicates
+    root_logger.propagate = False
     
     # Konsol handler
     console_handler = logging.StreamHandler()
@@ -51,19 +51,31 @@ def setup_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
     file_handler.setLevel(logging.DEBUG)  # Dosyaya tüm seviyeleri yaz
     file_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
     
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
     
-    return logger
+    _root_configured = True
 
 
-# Ana uygulama logger'ı
-logger = setup_logger("renforge")
+def setup_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
+    """
+    Deprecated: Use get_logger() instead.
+    This function is kept for backward compatibility.
+    """
+    return get_logger(name.replace("renforge.", ""))
+
+
+# Ana uygulama logger'ı - configure root on module load
+_configure_root_logger()
+logger = logging.getLogger("renforge")
 
 
 def get_logger(name: str) -> logging.Logger:
     """
     Modül için child logger döndürür.
+    
+    Child loggers do NOT add handlers - they propagate to the root 'renforge' logger.
+    This prevents duplicate log lines.
     
     Args:
         name: Modül adı
@@ -71,4 +83,10 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         renforge.{name} formatında logger
     """
-    return setup_logger(f"renforge.{name}")
+    # Ensure root is configured
+    _configure_root_logger()
+    
+    # Return child logger - it inherits handlers from parent via propagation
+    child_logger = logging.getLogger(f"renforge.{name}")
+    # propagate=True is the default, child logs bubble up to root
+    return child_logger

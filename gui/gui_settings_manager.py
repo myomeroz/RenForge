@@ -152,7 +152,19 @@ def handle_model_changed(main_window):
         logger.debug(f"Updated main_window.selected_model to: {new_model}")
 
         if new_model:
+            # Reset state first, then reinitialize
             _reset_gemini_state(main_window, f"Model changed to {new_model}.")
+            
+            # Auto-reinitialize Gemini with the new model
+            # This is lightweight and uses QTimer to avoid blocking UI
+            api_key = ai.load_api_key()
+            if api_key:
+                logger.info(f"Auto-reinitializing Gemini with new model: {new_model}")
+                # Use QTimer.singleShot to defer initialization slightly,
+                # allowing UI to update first and keeping main thread responsive
+                QTimer.singleShot(100, lambda: _deferred_gemini_init(main_window, new_model))
+            else:
+                logger.debug("No API key found, skipping auto-reinit.")
 
         else:
 
@@ -169,6 +181,23 @@ def handle_model_changed(main_window):
             logger.debug(f"Updated selected_model for tab '{os.path.basename(main_window.current_file_path)}' to: {new_model}")
     else:
          logger.debug("No active tab data to update.")
+
+
+def _deferred_gemini_init(main_window, model_name):
+    """Deferred Gemini initialization called via QTimer to avoid blocking UI."""
+    try:
+        logger.debug(f"[_deferred_gemini_init] Starting deferred init for model: {model_name}")
+        success = ensure_gemini_initialized(main_window, force_init=True)
+        if success:
+            logger.info(f"Gemini reinitialized successfully with model: {model_name}")
+            main_window.statusBar().showMessage(f"AI ready with {model_name}", 3000)
+        else:
+            logger.warning(f"Gemini reinitialization failed for model: {model_name}")
+            main_window.statusBar().showMessage(f"AI initialization failed for {model_name}", 5000)
+    except Exception as e:
+        logger.error(f"Error during deferred Gemini init: {e}")
+        main_window.statusBar().showMessage(f"AI error: {e}", 5000)
+
 
 def _reset_gemini_state(main_window, reason=""):
 

@@ -4,6 +4,7 @@ RenForge UI Builder
 Responsible for creating all UI widgets and layouts for the main window.
 """
 
+import os
 from renforge_logger import get_logger
 logger = get_logger("gui.ui_builder")
 
@@ -24,6 +25,20 @@ import gui.gui_tab_manager as tab_manager
 import gui.gui_table_manager as table_manager
 import gui.gui_action_handler as action_handler
 import gui.gui_settings_manager as settings_manager
+
+
+def safe_icon(relative_path: str) -> QIcon:
+    """
+    Gracefully load an icon, returning empty QIcon if file doesn't exist.
+    Prevents Qt warnings about missing SVG files.
+    """
+    full_path = config.resource_path(relative_path)
+    if os.path.isfile(full_path):
+        return QIcon(full_path)
+    else:
+        # Log once but don't spam - icons are optional
+        logger.debug(f"Icon not found (optional): {relative_path}")
+        return QIcon()
 
 
 class UIBuilder:
@@ -60,7 +75,7 @@ class UIBuilder:
         # Project view button
         self.main.project_view_button = QToolButton()
         self.main.project_view_button.setObjectName("projectViewButton")
-        self.main.project_view_button.setIcon(QIcon(config.resource_path("pics/project.svg")))
+        self.main.project_view_button.setIcon(safe_icon("pics/project.svg"))
         self.main.project_view_button.setToolTip("Show/hide project panel")
         self.main.project_view_button.setCheckable(True)
         self.main.project_view_button.setChecked(False)
@@ -70,7 +85,7 @@ class UIBuilder:
         # Search view button
         self.main.search_view_button = QToolButton()
         self.main.search_view_button.setObjectName("searchViewButton")
-        self.main.search_view_button.setIcon(QIcon(config.resource_path("pics/search.svg")))
+        self.main.search_view_button.setIcon(safe_icon("pics/search.svg"))
         self.main.search_view_button.setToolTip("Show/hide search and replace panel")
         self.main.search_view_button.setCheckable(True)
         self.main.search_view_button.setChecked(False)
@@ -137,19 +152,19 @@ class UIBuilder:
         buttons_layout = QVBoxLayout()
         
         self.main.find_next_btn = QPushButton(tr("btn_find_next"))
-        self.main.find_next_btn.setIcon(QIcon(config.resource_path("pics/find_next.svg")))
+        self.main.find_next_btn.setIcon(safe_icon("pics/find_next.svg"))
         self.main.find_next_btn.setToolTip("Find next occurrence")
         self.main.find_next_btn.clicked.connect(lambda: action_handler.handle_find_next(self.main))
         buttons_layout.addWidget(self.main.find_next_btn)
         
         self.main.replace_btn = QPushButton(tr("btn_replace"))
-        self.main.replace_btn.setIcon(QIcon(config.resource_path("pics/replace.svg")))
+        self.main.replace_btn.setIcon(safe_icon("pics/replace.svg"))
         self.main.replace_btn.setToolTip("Replace current and find next")
         self.main.replace_btn.clicked.connect(lambda: action_handler.handle_replace(self.main))
         buttons_layout.addWidget(self.main.replace_btn)
         
         self.main.replace_all_btn = QPushButton(tr("btn_replace_all"))
-        self.main.replace_all_btn.setIcon(QIcon(config.resource_path("pics/replace.svg")))
+        self.main.replace_all_btn.setIcon(safe_icon("pics/replace.svg"))
         self.main.replace_all_btn.setToolTip("Replace all occurrences")
         self.main.replace_all_btn.clicked.connect(lambda: action_handler.handle_replace_all(self.main))
         buttons_layout.addWidget(self.main.replace_all_btn)
@@ -257,40 +272,40 @@ class UIBuilder:
         
         # AI Edit button - ONLY emit signal, handler in app_bootstrap
         self.main.ai_edit_btn = QPushButton(tr("btn_ai"))
-        self.main.ai_edit_btn.setIcon(QIcon(config.resource_path("pics/ai.svg")))
+        self.main.ai_edit_btn.setIcon(safe_icon("pics/ai.svg"))
         self.main.ai_edit_btn.setToolTip("Edit selected line with Gemini")
         self.main.ai_edit_btn.clicked.connect(lambda: self.main.translate_ai_requested.emit())
         row1.addWidget(self.main.ai_edit_btn)
         
         # Google Translate button - ONLY emit signal, handler in app_bootstrap
         self.main.gt_translate_btn = QPushButton(tr("btn_gtranslate"))
-        self.main.gt_translate_btn.setIcon(QIcon(config.resource_path("pics/gt.svg")))
+        self.main.gt_translate_btn.setIcon(safe_icon("pics/gt.svg"))
         self.main.gt_translate_btn.setToolTip("Translate with Google Translate")
         self.main.gt_translate_btn.clicked.connect(lambda: self.main.translate_google_requested.emit())
         row1.addWidget(self.main.gt_translate_btn)
         
         # Batch Google Translate button - ONLY emit signal, handler in app_bootstrap
         self.main.batch_gt_btn = QPushButton(tr("btn_batch_gtranslate"))
-        self.main.batch_gt_btn.setIcon(QIcon(config.resource_path("pics/batch.svg")))
+        self.main.batch_gt_btn.setIcon(safe_icon("pics/batch.svg"))
         self.main.batch_gt_btn.setToolTip("Batch translate selected lines with Google")
         self.main.batch_gt_btn.clicked.connect(lambda: self.main.batch_google_requested.emit())
         row1.addWidget(self.main.batch_gt_btn)
         
         # Batch AI button - ONLY emit signal, handler in app_bootstrap
         self.main.batch_ai_btn = QPushButton(tr("btn_batch_ai"))
-        self.main.batch_ai_btn.setIcon(QIcon(config.resource_path("pics/ai.svg")))
+        self.main.batch_ai_btn.setIcon(safe_icon("pics/ai.svg"))
         self.main.batch_ai_btn.setToolTip("Batch translate selected lines with Gemini AI")
         self.main.batch_ai_btn.clicked.connect(lambda: self.main.batch_ai_requested.emit())
         row1.addWidget(self.main.batch_ai_btn)
         
         self.main.revert_btn = QPushButton(tr("btn_revert"))
-        self.main.revert_btn.setIcon(QIcon(config.resource_path("pics/revert.svg")))
+        self.main.revert_btn.setIcon(safe_icon("pics/revert.svg"))
         self.main.revert_btn.setToolTip("Revert selected lines")
         self.main.revert_btn.clicked.connect(lambda: table_manager.revert_selected_items(self.main))
         row1.addWidget(self.main.revert_btn)
         
         self.main.revert_all_btn = QPushButton(tr("btn_revert_all"))
-        self.main.revert_all_btn.setIcon(QIcon(config.resource_path("pics/revert_all.svg")))
+        self.main.revert_all_btn.setIcon(safe_icon("pics/revert_all.svg"))
         self.main.revert_all_btn.setToolTip("Revert all unsaved changes")
         self.main.revert_all_btn.clicked.connect(lambda: table_manager.revert_all_items(self.main))
         row1.addWidget(self.main.revert_all_btn)
@@ -303,19 +318,19 @@ class UIBuilder:
         row2.setSpacing(4)
         
         self.main.toggle_bp_btn = QPushButton(tr("btn_marker"))
-        self.main.toggle_bp_btn.setIcon(QIcon(config.resource_path("pics/breakpoint.svg")))
+        self.main.toggle_bp_btn.setIcon(safe_icon("pics/breakpoint.svg"))
         self.main.toggle_bp_btn.setToolTip(f"Set/unset marker ({config.BREAKPOINT_MARKER})")
         self.main.toggle_bp_btn.clicked.connect(lambda: action_handler.toggle_breakpoint(self.main))
         row2.addWidget(self.main.toggle_bp_btn)
         
         self.main.go_to_bp_btn = QPushButton(tr("btn_next_marker"))
-        self.main.go_to_bp_btn.setIcon(QIcon(config.resource_path("pics/goto.svg")))
+        self.main.go_to_bp_btn.setIcon(safe_icon("pics/goto.svg"))
         self.main.go_to_bp_btn.setToolTip("Go to next marker")
         self.main.go_to_bp_btn.clicked.connect(lambda: action_handler.go_to_next_breakpoint(self.main))
         row2.addWidget(self.main.go_to_bp_btn)
         
         self.main.clear_bp_btn = QPushButton(tr("btn_clear_markers"))
-        self.main.clear_bp_btn.setIcon(QIcon(config.resource_path("pics/breakpoint_clear.svg")))
+        self.main.clear_bp_btn.setIcon(safe_icon("pics/breakpoint_clear.svg"))
         self.main.clear_bp_btn.setToolTip("Clear all markers")
         self.main.clear_bp_btn.clicked.connect(lambda: action_handler.clear_all_breakpoints(self.main))
         row2.addWidget(self.main.clear_bp_btn)
@@ -325,13 +340,13 @@ class UIBuilder:
         row2.addWidget(QLabel(tr("mode_direct") + ":"))
         
         self.main.insert_btn = QPushButton(tr("btn_add"))
-        self.main.insert_btn.setIcon(QIcon(config.resource_path("pics/add.svg")))
+        self.main.insert_btn.setIcon(safe_icon("pics/add.svg"))
         self.main.insert_btn.setToolTip("Insert new line (direct mode)")
         self.main.insert_btn.clicked.connect(lambda: action_handler.insert_line(self.main))
         row2.addWidget(self.main.insert_btn)
         
         self.main.delete_btn = QPushButton(tr("btn_delete"))
-        self.main.delete_btn.setIcon(QIcon(config.resource_path("pics/remove.svg")))
+        self.main.delete_btn.setIcon(safe_icon("pics/remove.svg"))
         self.main.delete_btn.setToolTip("Delete selected line (direct mode)")
         self.main.delete_btn.clicked.connect(lambda: action_handler.delete_line(self.main))
         row2.addWidget(self.main.delete_btn)
