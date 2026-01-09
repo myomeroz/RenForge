@@ -162,9 +162,10 @@ class RenForgeGUI(QMainWindow):
         self.batch_summary_panel.undo_requested.connect(self._handle_undo_requested)
         self.batch_summary_panel.hide()  # Hidden until first batch
         
-        # Stage 5: Add FilterToolbar (will be added to central widget later)
-        self.filter_toolbar = FilterToolbar(self)
+        # Stage 5: Create FilterToolbar (not added to layout yet - for future integration)
+        self.filter_toolbar = FilterToolbar()  # No parent - will be added to layout later
         self.filter_toolbar.filter_changed.connect(self._handle_filter_changed)
+        self.filter_toolbar.hide()  # Hidden until integrated into UI
         
         self._update_ui_state() 
 
