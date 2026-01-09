@@ -58,6 +58,7 @@ class BatchAIWorker(QRunnable):
     def run(self):
         import time
         import renforge_config as config
+        import renforge_ai as ai_module
         
         results = {'success_count': 0, 'error_count': 0, 'errors': [], 'canceled': False, 'processed': 0}
         total = len(self.indices)
@@ -98,7 +99,7 @@ class BatchAIWorker(QRunnable):
                 
             try:
                 # Call AI with batch
-                batch_result = ai.translate_text_batch_gemini_strict(
+                batch_result = ai_module.translate_text_batch_gemini_strict(
                     items=batch_items,
                     source_lang=self.source_lang,
                     target_lang=self.target_lang,
