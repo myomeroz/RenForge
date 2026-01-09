@@ -324,7 +324,9 @@ def translate_text_batch_gemini_strict(
     source_lang: str,
     target_lang: str,
     model: str = None,
-    glossary: dict = None
+    glossary: dict = None,
+    on_chunk_done: callable = None,
+    cancel_check: callable = None
 ) -> dict:
     """
     Batch translate multiple items with strict JSON contract.
@@ -342,12 +344,16 @@ def translate_text_batch_gemini_strict(
         target_lang: Target language (e.g., 'turkish')
         model: Optional model name (uses current gemini_model)
         glossary: Optional dict of term mappings {source_term: target_term}
+        on_chunk_done: Optional callback(processed_count, total_count, chunk_translations)
+                       Called after each chunk completes for progress reporting
+        cancel_check: Optional callable() -> bool, returns True to cancel
         
     Returns:
         {
           "translations": [{"i": 0, "t": "translated text"}, ...],
           "meta": {"model": "...", "source_lang": "...", "target_lang": "..."},
-          "errors": [{"i": idx, "error": "..."}, ...]  # failed items
+          "errors": [{"i": idx, "error": "..."}, ...],  # failed items
+          "canceled": bool  # True if canceled mid-batch
         }
     """
     global gemini_model, no_ai
@@ -367,7 +373,8 @@ def translate_text_batch_gemini_strict(
             "fallback": 0,  # Items where original was kept due to validation failure
             "retried": 0,   # Items that required repair prompt
             "empty_skipped": 0
-        }
+        },
+        "canceled": False
     }
     
     if no_ai or gemini_model is None:
@@ -408,20 +415,33 @@ def translate_text_batch_gemini_strict(
     # Split into chunks
     chunks = _split_into_chunks(prepared_items)
     total_chunks = len(chunks)
-    logger.info(f"[translate_batch_strict] Processing {len(prepared_items)} items in {total_chunks} chunks")
+    total_items = len(prepared_items)
+    processed_count = 0
+    
+    logger.info(f"[translate_batch_strict] Processing {total_items} items in {total_chunks} chunks")
     
     for chunk_idx, chunk in enumerate(chunks):
+        # Check for cancellation before each chunk
+        if cancel_check and cancel_check():
+            result["canceled"] = True
+            logger.info(f"[translate_batch_strict] Canceled at chunk {chunk_idx+1}/{total_chunks}")
+            break
+        
         chunk_start = time.time()
         chunk_result = _translate_chunk(chunk, source_lang, target_lang, glossary)
         chunk_time = time.time() - chunk_start
         
         # Merge results
-        result["translations"].extend(chunk_result["translations"])
+        chunk_translations = chunk_result["translations"]
+        result["translations"].extend(chunk_translations)
         result["errors"].extend(chunk_result["errors"])
         
         # Merge stats
         for key in ["success", "failed", "fallback", "retried"]:
             result["stats"][key] += chunk_result["stats"].get(key, 0)
+        
+        # Update processed count
+        processed_count += len(chunk)
         
         # Log chunk summary
         cs = chunk_result["stats"]
@@ -429,16 +449,24 @@ def translate_text_batch_gemini_strict(
                    f"success={cs.get('success', 0)}, failed={cs.get('failed', 0)}, "
                    f"fallback={cs.get('fallback', 0)}, time={chunk_time:.2f}s")
         
+        # Call progress callback
+        if on_chunk_done:
+            try:
+                on_chunk_done(processed_count, total_items, chunk_translations)
+            except Exception as cb_err:
+                logger.warning(f"[translate_batch_strict] on_chunk_done callback error: {cb_err}")
+        
         # Small delay between chunks
         if chunk_idx + 1 < total_chunks:
-            time.sleep(0.5)
+            time.sleep(0.3)
     
     # Sort translations by index
     result["translations"].sort(key=lambda x: x["i"])
     
     # Log final summary
     s = result["stats"]
-    logger.info(f"[translate_batch_strict] DONE: total={s['total']}, success={s['success']}, "
+    status = "CANCELED" if result["canceled"] else "DONE"
+    logger.info(f"[translate_batch_strict] {status}: total={s['total']}, success={s['success']}, "
                f"failed={s['failed']}, fallback={s['fallback']}, retried={s['retried']}")
     
     return result
