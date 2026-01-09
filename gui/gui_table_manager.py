@@ -382,7 +382,7 @@ def revert_single_item_logic(main_window, item_index: int) -> bool:
 
     if reverted:
 
-        item['is_modified_session'] = False
+        item.is_modified_session = False
 
         update_table_item_text(main_window, table_widget, item_index, 4, initial_text)
 
