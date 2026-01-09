@@ -342,17 +342,27 @@ def translate_text_batch_gemini_strict(
             "source_lang": source_lang,
             "target_lang": target_lang
         },
-        "errors": []
+        "errors": [],
+        "stats": {
+            "total": len(items),
+            "success": 0,
+            "failed": 0,
+            "fallback": 0,  # Items where original was kept due to validation failure
+            "retried": 0,   # Items that required repair prompt
+            "empty_skipped": 0
+        }
     }
     
     if no_ai or gemini_model is None:
         for i, item in enumerate(items):
             result["errors"].append({"i": i, "error": "Gemini not initialized"})
+        result["stats"]["failed"] = len(items)
         return result
     
     if not is_internet_available():
         for i, item in enumerate(items):
             result["errors"].append({"i": i, "error": "No internet connection"})
+        result["stats"]["failed"] = len(items)
         return result
     
     if not items:
@@ -364,6 +374,7 @@ def translate_text_batch_gemini_strict(
         if not text or not text.strip():
             # Empty items get empty translation
             result["translations"].append({"i": i, "t": ""})
+            result["stats"]["empty_skipped"] += 1
             continue
         
         masked_text, token_map = mask_renpy_tokens(text)
@@ -379,19 +390,39 @@ def translate_text_batch_gemini_strict(
     
     # Split into chunks
     chunks = _split_into_chunks(prepared_items)
-    logger.info(f"[translate_batch_strict] Processing {len(prepared_items)} items in {len(chunks)} chunks")
+    total_chunks = len(chunks)
+    logger.info(f"[translate_batch_strict] Processing {len(prepared_items)} items in {total_chunks} chunks")
     
     for chunk_idx, chunk in enumerate(chunks):
+        chunk_start = time.time()
         chunk_result = _translate_chunk(chunk, source_lang, target_lang, glossary)
+        chunk_time = time.time() - chunk_start
+        
+        # Merge results
         result["translations"].extend(chunk_result["translations"])
         result["errors"].extend(chunk_result["errors"])
         
+        # Merge stats
+        for key in ["success", "failed", "fallback", "retried"]:
+            result["stats"][key] += chunk_result["stats"].get(key, 0)
+        
+        # Log chunk summary
+        cs = chunk_result["stats"]
+        logger.info(f"[translate_batch_strict] Chunk {chunk_idx+1}/{total_chunks}: "
+                   f"success={cs.get('success', 0)}, failed={cs.get('failed', 0)}, "
+                   f"fallback={cs.get('fallback', 0)}, time={chunk_time:.2f}s")
+        
         # Small delay between chunks
-        if chunk_idx + 1 < len(chunks):
+        if chunk_idx + 1 < total_chunks:
             time.sleep(0.5)
     
     # Sort translations by index
     result["translations"].sort(key=lambda x: x["i"])
+    
+    # Log final summary
+    s = result["stats"]
+    logger.info(f"[translate_batch_strict] DONE: total={s['total']}, success={s['success']}, "
+               f"failed={s['failed']}, fallback={s['fallback']}, retried={s['retried']}")
     
     return result
 
@@ -425,7 +456,11 @@ def _split_into_chunks(items: list) -> list:
 
 def _translate_chunk(chunk: list, source_lang: str, target_lang: str, glossary: dict = None) -> dict:
     """Translate a single chunk of items."""
-    result = {"translations": [], "errors": []}
+    result = {
+        "translations": [], 
+        "errors": [],
+        "stats": {"success": 0, "failed": 0, "fallback": 0, "retried": 0}
+    }
     
     # Build source language instruction
     source_instruction = f"from {source_lang}" if source_lang.lower() != "auto" else "(auto-detect source language)"
@@ -461,16 +496,25 @@ OUTPUT (JSON only):"""
     if error:
         # All items in chunk fail
         for item in chunk:
+            result["translations"].append({
+                "i": item["i"], 
+                "t": item["original"],  # Fallback to original
+                "fallback": True,
+                "error_reason": error
+            })
             result["errors"].append({"i": item["i"], "error": error})
+        result["stats"]["failed"] = len(chunk)
         return result
     
     # Parse and validate response
     translations = _parse_batch_response(response_text)
+    did_retry = False
     
     if translations is None:
         # Parsing failed, retry with stricter prompt
         logger.warning("[translate_chunk] JSON parse failed, retrying with repair prompt")
         translations = _retry_with_repair_prompt(prompt, chunk, response_text)
+        did_retry = True
     
     # Process each translation
     translated_indices = {t["i"]: t["t"] for t in translations} if translations else {}
@@ -481,25 +525,41 @@ OUTPUT (JSON only):"""
         if idx not in translated_indices:
             # Missing translation, use original as fallback
             logger.warning(f"[translate_chunk] Missing translation for index {idx}, using original")
-            result["translations"].append({"i": idx, "t": item["original"]})
+            result["translations"].append({
+                "i": idx, 
+                "t": item["original"],
+                "fallback": True,
+                "error_reason": "Translation missing from response"
+            })
             result["errors"].append({"i": idx, "error": "Translation missing from response"})
+            result["stats"]["fallback"] += 1
             continue
         
         translated_masked = translated_indices[idx]
         
         # Validate token preservation
         missing_tokens = validate_tokens_preserved(item["masked"], translated_masked, item["token_map"])
+        item_retried = False
         
         if missing_tokens:
             # Try to repair
             repaired = _repair_single_item(item, translated_masked, missing_tokens, target_lang)
             if repaired:
                 translated_masked = repaired
+                item_retried = True
+                result["stats"]["retried"] += 1
             else:
                 # Fallback to original
+                error_msg = f"Missing tokens: {missing_tokens}"
                 logger.warning(f"[translate_chunk] Token validation failed for {idx}, using original")
-                result["translations"].append({"i": idx, "t": item["original"]})
-                result["errors"].append({"i": idx, "error": f"Missing tokens: {missing_tokens}"})
+                result["translations"].append({
+                    "i": idx, 
+                    "t": item["original"],
+                    "fallback": True,
+                    "error_reason": error_msg
+                })
+                result["errors"].append({"i": idx, "error": error_msg})
+                result["stats"]["fallback"] += 1
                 continue
         
         # Unmask and clean up
@@ -513,6 +573,11 @@ OUTPUT (JSON only):"""
                 final_translation = final_translation.lstrip("- ").strip()
         
         result["translations"].append({"i": idx, "t": final_translation})
+        result["stats"]["success"] += 1
+        
+        # Track if this item was retried (for global stats)
+        if item_retried or did_retry:
+            result["stats"]["retried"] += 1
     
     return result
 
