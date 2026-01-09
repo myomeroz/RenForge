@@ -11,6 +11,7 @@ from renforge_logger import get_logger
 logger = get_logger("ai")
 
 import renforge_config as config
+import renforge_settings as rf_settings
 
 from renforge_exceptions import APIKeyError, ModelError, TranslationError, NetworkError
 
@@ -996,10 +997,10 @@ def get_google_languages() -> dict | None:
 def load_api_key():
 
     logger.debug("[load_api_key] Called. Attempting to load settings...") 
-    settings = set.load_settings() 
+    settings = rf_settings.load_settings() 
 
     if not isinstance(settings, dict):
-        logger.error(f"[load_api_key] set.load_settings did not return a dictionary (returned {type(settings)}).")
+        logger.error(f"[load_api_key] rf_settings.load_settings did not return a dictionary (returned {type(settings)}).")
         return None
     key = settings.get("api_key") 
     if key:
