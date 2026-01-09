@@ -455,7 +455,7 @@ def _split_into_chunks(items: list) -> list:
 
 
 def _translate_chunk(chunk: list, source_lang: str, target_lang: str, glossary: dict = None) -> dict:
-    """Translate a single chunk of items."""
+    """Translate a single chunk of items with retry logic."""
     result = {
         "translations": [], 
         "errors": [],
@@ -474,7 +474,13 @@ def _translate_chunk(chunk: list, source_lang: str, target_lang: str, glossary: 
     # Build indexed source list
     items_json = json.dumps([{"i": item["i"], "s": item["masked"]} for item in chunk], ensure_ascii=False)
     
-    prompt = f"""You are a strict translation engine for Ren'Py visual novel scripts.
+    # Collect all tokens for repair prompts
+    all_tokens = set()
+    for item in chunk:
+        all_tokens.update(item["token_map"].keys())
+    tokens_str = ', '.join(sorted(all_tokens)) if all_tokens else "(none)"
+    
+    base_prompt = f"""You are a strict translation engine for Ren'Py visual novel scripts.
 
 TASK: Translate the following texts {source_instruction} to {target_lang}.
 
@@ -490,48 +496,87 @@ SOURCE TEXTS:
 
 OUTPUT (JSON only):"""
 
-    # First attempt
-    response_text, error = _call_gemini_with_backoff(prompt)
+    # Retry loop: up to 2 retries (3 total attempts)
+    MAX_SCHEMA_RETRIES = 2
+    translations = None
+    last_response = None
+    last_error = None
     
-    if error:
-        # All items in chunk fail
+    for attempt in range(MAX_SCHEMA_RETRIES + 1):
+        if attempt == 0:
+            prompt = base_prompt
+        else:
+            # Repair prompt for retries
+            logger.warning(f"[translate_chunk] Retry attempt {attempt}/{MAX_SCHEMA_RETRIES} due to parse/schema error")
+            prompt = f"""Your previous response was INVALID. You MUST output JSON ONLY.
+
+REQUIRED JSON SCHEMA (EXACT FORMAT):
+{{"translations":[{{"i":0,"t":"translated text"}},{{"i":1,"t":"translated text"}}]}}
+
+CRITICAL RULES:
+- Output ONLY the JSON object, nothing else
+- Each item must have "i" (index) and "t" (translation)
+- DO NOT use {{"translation":"..."}} format - this is WRONG
+- Include these tokens in translations: {tokens_str}
+
+Your failed response started with: {last_response[:200] if last_response else 'N/A'}...
+
+{base_prompt}"""
+        
+        response_text, error = _call_gemini_with_backoff(prompt)
+        
+        if error:
+            last_error = error
+            logger.warning(f"[translate_chunk] API error on attempt {attempt+1}: {error}")
+            continue
+        
+        last_response = response_text
+        
+        # Parse and validate schema
+        translations = _parse_batch_response_strict(response_text)
+        
+        if translations is not None:
+            # Success! Log if we retried
+            if attempt > 0:
+                logger.info(f"[translate_chunk] Schema parse succeeded on attempt {attempt+1}")
+                result["stats"]["retried"] += len(chunk)
+            break
+        else:
+            logger.warning(f"[translate_chunk] Schema validation failed on attempt {attempt+1}")
+    
+    # If all attempts failed, fallback all items to original
+    if translations is None:
+        logger.error(f"[translate_chunk] All {MAX_SCHEMA_RETRIES+1} attempts failed, falling back to original for {len(chunk)} items")
         for item in chunk:
+            error_reason = last_error or "JSON schema validation failed after retries"
+            logger.info(f"[translate_chunk] Fallback kept original for i={item['i']} reason={error_reason}")
             result["translations"].append({
                 "i": item["i"], 
-                "t": item["original"],  # Fallback to original
+                "t": item["original"],
                 "fallback": True,
-                "error_reason": error
+                "error_reason": error_reason
             })
-            result["errors"].append({"i": item["i"], "error": error})
-        result["stats"]["failed"] = len(chunk)
+            result["errors"].append({"i": item["i"], "error": error_reason})
+        result["stats"]["fallback"] = len(chunk)
         return result
     
-    # Parse and validate response
-    translations = _parse_batch_response(response_text)
-    did_retry = False
-    
-    if translations is None:
-        # Parsing failed, retry with stricter prompt
-        logger.warning("[translate_chunk] JSON parse failed, retrying with repair prompt")
-        translations = _retry_with_repair_prompt(prompt, chunk, response_text)
-        did_retry = True
-    
     # Process each translation
-    translated_indices = {t["i"]: t["t"] for t in translations} if translations else {}
+    translated_indices = {t["i"]: t["t"] for t in translations}
     
     for item in chunk:
         idx = item["i"]
         
         if idx not in translated_indices:
             # Missing translation, use original as fallback
-            logger.warning(f"[translate_chunk] Missing translation for index {idx}, using original")
+            error_reason = "Translation missing from response"
+            logger.info(f"[translate_chunk] Fallback kept original for i={idx} reason={error_reason}")
             result["translations"].append({
                 "i": idx, 
                 "t": item["original"],
                 "fallback": True,
-                "error_reason": "Translation missing from response"
+                "error_reason": error_reason
             })
-            result["errors"].append({"i": idx, "error": "Translation missing from response"})
+            result["errors"].append({"i": idx, "error": error_reason})
             result["stats"]["fallback"] += 1
             continue
         
@@ -542,7 +587,7 @@ OUTPUT (JSON only):"""
         item_retried = False
         
         if missing_tokens:
-            # Try to repair
+            # Try to repair single item
             repaired = _repair_single_item(item, translated_masked, missing_tokens, target_lang)
             if repaired:
                 translated_masked = repaired
@@ -550,15 +595,15 @@ OUTPUT (JSON only):"""
                 result["stats"]["retried"] += 1
             else:
                 # Fallback to original
-                error_msg = f"Missing tokens: {missing_tokens}"
-                logger.warning(f"[translate_chunk] Token validation failed for {idx}, using original")
+                error_reason = f"Missing tokens: {missing_tokens}"
+                logger.info(f"[translate_chunk] Fallback kept original for i={idx} reason={error_reason}")
                 result["translations"].append({
                     "i": idx, 
                     "t": item["original"],
                     "fallback": True,
-                    "error_reason": error_msg
+                    "error_reason": error_reason
                 })
-                result["errors"].append({"i": idx, "error": error_msg})
+                result["errors"].append({"i": idx, "error": error_reason})
                 result["stats"]["fallback"] += 1
                 continue
         
@@ -574,12 +619,71 @@ OUTPUT (JSON only):"""
         
         result["translations"].append({"i": idx, "t": final_translation})
         result["stats"]["success"] += 1
-        
-        # Track if this item was retried (for global stats)
-        if item_retried or did_retry:
-            result["stats"]["retried"] += 1
     
     return result
+
+
+def _parse_batch_response_strict(response_text: str) -> list:
+    """
+    Parse batch translation response with STRICT schema validation.
+    Rejects {"translation": ...} format - only accepts {"translations": [...]}
+    
+    Returns:
+        List of {"i": idx, "t": text} or None if invalid
+    """
+    if not response_text:
+        return None
+    
+    try:
+        # Remove markdown code blocks if present
+        text = response_text.strip()
+        if text.startswith("```"):
+            lines = text.split('\n')
+            lines = [l for l in lines if not l.startswith("```")]
+            text = '\n'.join(lines).strip()
+        
+        data = json.loads(text)
+        
+        # STRICT: Must have "translations" key (plural), not "translation" (singular)
+        if isinstance(data, dict):
+            if "translation" in data and "translations" not in data:
+                # WRONG SCHEMA - single translation format, reject it
+                logger.warning("[_parse_batch_response_strict] Rejected wrong schema: found 'translation' instead of 'translations'")
+                return None
+            
+            if "translations" in data:
+                translations = data["translations"]
+                if isinstance(translations, list):
+                    # Validate each item has required fields
+                    valid_items = []
+                    for item in translations:
+                        if isinstance(item, dict) and "i" in item and "t" in item:
+                            valid_items.append({"i": item["i"], "t": item["t"]})
+                    if valid_items:
+                        return valid_items
+                    else:
+                        logger.warning("[_parse_batch_response_strict] No valid items in translations array")
+                        return None
+        
+        # Allow bare list format as fallback
+        if isinstance(data, list):
+            valid_items = []
+            for item in data:
+                if isinstance(item, dict) and "i" in item and "t" in item:
+                    valid_items.append({"i": item["i"], "t": item["t"]})
+            if valid_items:
+                return valid_items
+        
+    except json.JSONDecodeError as e:
+        logger.warning(f"[_parse_batch_response_strict] JSON decode error: {e}")
+        # Try regex extraction as last resort
+        pattern = r'\{"i"\s*:\s*(\d+)\s*,\s*"t"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"\}'
+        matches = re.findall(pattern, response_text)
+        if matches:
+            logger.info(f"[_parse_batch_response_strict] Recovered {len(matches)} items via regex")
+            return [{"i": int(m[0]), "t": m[1].replace('\\"', '"')} for m in matches]
+    
+    return None
 
 
 def _parse_batch_response(response_text: str) -> list:
