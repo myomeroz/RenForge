@@ -63,68 +63,110 @@ class BatchAIWorker(QRunnable):
         total = len(self.indices)
         results['total'] = total
         
-        for i, idx in enumerate(self.indices):
+        # Batch size for worker-level chunking (keeps UI responsive vs sending all at once)
+        WORKER_BATCH_SIZE = 50
+        
+        # Process in chunks
+        for i in range(0, total, WORKER_BATCH_SIZE):
             if self._is_canceled:
                 results['canceled'] = True
                 break
-            
-            item = self.parsed_file.get_item(idx)
-            if not item:
-                continue
-            
-            text = item.original_text or item.current_text
-            if not text or not text.strip():
-                self.signals.progress.emit(i + 1, total)
-                continue
-            
-            try:
-                # Get languages
-                target_lang = self.target_lang
-                source_lang = self.source_lang
                 
-                # Use strict batch translation (single-item for per-item progress updates)
+            # Get chunk indices
+            chunk_indices = self.indices[i : i + WORKER_BATCH_SIZE]
+            
+            # Prepare batch payload
+            batch_items = []
+            valid_indices = []
+            
+            for idx in chunk_indices:
+                item = self.parsed_file.get_item(idx)
+                if not item:
+                    continue
+                
+                text = item.original_text or item.current_text
+                if not text or not text.strip():
+                    continue
+                
+                batch_items.append(text)
+                valid_indices.append(idx)
+            
+            if not batch_items:
+                # Just advance progress if no valid items in this chunk
+                self.signals.progress.emit(min(i + WORKER_BATCH_SIZE, total), total)
+                continue
+                
+            try:
+                # Call AI with batch
                 batch_result = ai.translate_text_batch_gemini_strict(
-                    items=[text],  # Single item list
-                    source_lang=source_lang,
-                    target_lang=target_lang,
+                    items=batch_items,
+                    source_lang=self.source_lang,
+                    target_lang=self.target_lang,
                     glossary=getattr(config, 'TRANSLATION_GLOSSARY', None)
                 )
                 
-                # Extract result
-                translated = None
-                error_msg = None
-                
-                if batch_result.get("translations"):
-                    trans_item = batch_result["translations"][0]
-                    translated = trans_item.get("t")
-                    if trans_item.get("fallback"):
-                        error_msg = trans_item.get("error_reason", "Fallback to original")
-                
+                # Process errors map
+                item_errors = {}
                 if batch_result.get("errors"):
-                    error_msg = batch_result["errors"][0].get("error", error_msg)
+                    for err in batch_result["errors"]:
+                        item_errors[err.get("i")] = err.get("error")
                 
+                # Process translations
+                if batch_result.get("translations"):
+                    for t_item in batch_result["translations"]:
+                        if self._is_canceled:
+                            break
+                            
+                        # Map internal batch index (0..N) back to real file index
+                        internal_idx = t_item.get("i")
+                        if internal_idx is not None and internal_idx < len(valid_indices):
+                            real_idx = valid_indices[internal_idx]
+                            translated = t_item.get("t")
+                            
+                            if translated:
+                                # Update file model
+                                self.parsed_file.update_item_text(real_idx, translated)
+                                
+                                # Check for fallback
+                                error_reason = None
+                                if t_item.get("fallback"):
+                                    error_reason = t_item.get("error_reason")
+                                    # Could emit a special status here if UI supported it
+                                
+                                # Emit update
+                                self.signals.item_updated.emit(real_idx, translated, {'file_path': self.parsed_file.file_path})
+                                results['success_count'] += 1
+                                
+                                if error_reason:
+                                    results['error_count'] += 1
+                                    results['errors'].append(f"Line {self.parsed_file.get_item(real_idx).line_index}: Fallback - {error_reason}")
+                            else:
+                                # Empty translation?
+                                results['error_count'] += 1
+                                results['errors'].append(f"Line {self.parsed_file.get_item(real_idx).line_index}: Empty result")
+                
+                # Report chunk errors for items completely missing from translations (e.g. API error)
+                for internal_idx, error_msg in item_errors.items():
+                    if internal_idx < len(valid_indices):
+                        real_idx = valid_indices[internal_idx]
+                        if not any(t.get("i") == internal_idx for t in batch_result.get("translations", [])):
+                             results['error_count'] += 1
+                             results['errors'].append(f"Line {self.parsed_file.get_item(real_idx).line_index}: {error_msg}")
+
                 if self._is_canceled:
                     results['canceled'] = True
                     break
-                
-                if translated and str(translated).strip():
-                    # Update file model
-                    self.parsed_file.update_item_text(idx, translated)
-                    # Emit with file_path for robust context resolution
-                    self.signals.item_updated.emit(idx, translated, {'file_path': self.parsed_file.file_path})
-                    results['success_count'] += 1
-                else:
-                    results['error_count'] += 1
-                    err_detail = error_msg if error_msg else "Empty AI response"
-                    results['errors'].append(f"Line {item.line_index}: {err_detail}")
                     
             except Exception as e:
-                results['error_count'] += 1
-                results['errors'].append(f"Line {item.line_index}: {str(e)}")
+                # Whole batch failed?
+                results['error_count'] += len(batch_items)
+                results['errors'].append(f"Batch Error (lines {valid_indices[0]}...): {str(e)}")
             
-            self.signals.progress.emit(i + 1, total)
+            # Emit progress
+            processed_so_far = min(i + WORKER_BATCH_SIZE, total)
+            self.signals.progress.emit(processed_so_far, total)
             
-            # Throttle
+            # Throttle between chunks
             if not self._is_canceled:
                 time.sleep(getattr(config, 'BATCH_AI_DELAY', 0.5))
         
