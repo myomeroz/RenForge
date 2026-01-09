@@ -612,15 +612,57 @@ Your failed response started with: {last_response[:200] if last_response else 'N
         
         # Post-processing cleanup
         if final_translation:
+            # Handle leading colon (always strip, never valid)
             if final_translation.startswith(":"):
                 final_translation = final_translation.lstrip(": ").strip()
-            elif final_translation.startswith("- ") and not item["original"].startswith("-"):
-                final_translation = final_translation.lstrip("- ").strip()
+            
+            # Handle leading dash/em-dash: only if original didn't have it
+            original_starts_dash = item["original"].startswith("-") or item["original"].startswith("—")
+            trans_starts_dash = final_translation.startswith("-") or final_translation.startswith("—")
+            
+            if trans_starts_dash and not original_starts_dash:
+                # Try repair prompt to remove leading dash
+                repair_result = _repair_leading_punctuation(final_translation, item["original"], target_lang)
+                if repair_result:
+                    final_translation = repair_result
+                    result["stats"]["retried"] += 1
+                else:
+                    # Accept anyway but log warning (don't count as fallback)
+                    logger.warning(f"[translate_chunk] i={idx} has leading dash not in original (accepted with warning)")
         
         result["translations"].append({"i": idx, "t": final_translation})
         result["stats"]["success"] += 1
     
     return result
+
+
+def _repair_leading_punctuation(translation: str, original: str, target_lang: str) -> str:
+    """
+    Try to repair a translation that has unexpected leading punctuation.
+    
+    Returns:
+        Repaired translation, or None if repair failed/unchanged
+    """
+    repair_prompt = f"""The translation below incorrectly starts with a dash/hyphen that was not in the original.
+Remove the leading punctuation unless the original text requires it.
+
+Original: {original}
+Translation with error: {translation}
+
+Output ONLY the corrected translation to {target_lang}, nothing else:"""
+    
+    response_text, error = _call_gemini_with_backoff(repair_prompt, max_retries=1)
+    if error:
+        return None
+    
+    response_text = response_text.strip()
+    
+    # Check if it actually removed the dash
+    if response_text and not response_text.startswith("-") and not response_text.startswith("—"):
+        return response_text
+    
+    # Repair didn't help
+    return None
 
 
 def _parse_batch_response_strict(response_text: str) -> list:
