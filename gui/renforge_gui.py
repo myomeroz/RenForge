@@ -281,9 +281,26 @@ class RenForgeGUI(QMainWindow):
             return
         
         # Perform restore
+        snapshot = undo_mgr.get_snapshot(current_file_data.file_path)
+        affected_indices = list(snapshot.affected_rows.keys()) if snapshot else []
+        
         if undo_mgr.restore(current_file_data.file_path, current_file_data.items):
-            # Update table display
-            table_manager.populate_table(current_table, current_file_data.items, current_file_data.mode)
+            # Update only affected rows instead of repopulating entire table
+            for row_idx in affected_indices:
+                if 0 <= row_idx < len(current_file_data.items):
+                    item = current_file_data.items[row_idx]
+                    # Update text in translation column (column 4)
+                    table_manager.update_table_item_text(
+                        current_table, row_idx, 4, item.current_text or ""
+                    )
+                    # Update row style (modified status, markers)
+                    table_manager.update_table_row_style(current_table, row_idx, item)
+                    # Update batch marker column (column 7)
+                    table_manager.update_row_batch_marker(
+                        current_table, row_idx, 
+                        item.batch_marker, item.batch_tooltip
+                    )
+            
             self._set_current_tab_modified(True)
             self.statusBar().showMessage(f"Reverted {row_count} rows", 4000)
             
