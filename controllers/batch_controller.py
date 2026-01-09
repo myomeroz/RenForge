@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QMessageBox, QTableWidget
 from locales import tr
 import parser.core as parser
 import gui.gui_table_manager as table_manager
+from gui.views import batch_status_view, file_table_view
 
 
 class BatchController(QObject):
@@ -81,14 +82,8 @@ class BatchController(QObject):
         current_lines = current_file_data.lines
         current_mode = current_file_data.mode
         
-        # Resolve table widget on-demand via tab_data
-        table_widget = None
-        for i in range(self.main.tab_widget.count()):
-            if self.main.tab_data.get(i) == current_file_data.file_path:
-                widget = self.main.tab_widget.widget(i)
-                if isinstance(widget, QTableWidget):
-                    table_widget = widget
-                    break
+        # Resolve table widget on-demand via file_table_view
+        table_widget = file_table_view.resolve_table_widget(self.main, current_file_data.file_path)
         
         if not table_widget:
             logger.error(f"Batch update failed: No table widget found for {current_file_data.file_path}")
@@ -174,68 +169,38 @@ class BatchController(QObject):
         Args:
             results: Dict with keys: processed, total, success, errors, warnings, made_changes, canceled
         """
-        # Robust retrieval with fallbacks
-        processed = results.get('processed', results.get('total', 0))
-        total = results.get('total', processed)
-        
-        success = results.get('success', results.get('success_count', 0))
-        
-        # Handle errors (list vs count)
+        # Merge local errors/warnings with results
         result_errors = results.get('errors', [])
         if not isinstance(result_errors, list):
-             result_errors = []
-             
-        error_count_from_results = results.get('failed', results.get('error_count', len(result_errors)))
-        
-        # Combine with local errors
-        # Note: self._errors contains strings
+            result_errors = []
         all_errors = list(self._errors) + result_errors
-        total_error_count = len(all_errors)
-        # If error_count_from_results > len(result_errors), explicitly use that? 
-        # Usually they match. Let's trust the greater number or list length.
-        if error_count_from_results > total_error_count:
-             pass # Logic to handle unseen errors? Assuming list has all details.
-
-        warnings_list = results.get('warnings', [])
-        if not isinstance(warnings_list, list):
-             warnings_list = []
         
-        all_warnings = list(self._warnings) + warnings_list
-        total_warning_count = len(all_warnings)
-
+        result_warnings = results.get('warnings', [])
+        if not isinstance(result_warnings, list):
+            result_warnings = []
+        all_warnings = list(self._warnings) + result_warnings
+        
+        # Prepare merged results for formatting
+        merged_results = dict(results)
+        merged_results['errors'] = all_errors
+        merged_results['warnings'] = all_warnings
+        
+        # Use batch_status_view for formatting
+        summary_msg = batch_status_view.format_batch_summary(merged_results)
+        status_message = batch_status_view.get_status_message(merged_results)
+        
+        # Display summary
+        QMessageBox.information(self.main, tr("batch_result_title"), summary_msg)
+        
+        # Mark tab modified if changes were made
+        success = results.get('success', results.get('success_count', 0))
         made_changes = results.get('made_changes', success > 0)
         canceled = results.get('canceled', False)
-        
-        # Build summary message
-        summary_msg = "Batch translation finished.\n\n"
-        if canceled:
-            summary_msg += "TASK CANCELED BY USER\n\n"
-        summary_msg += f"Lines processed: {processed}/{total}\n"
-        summary_msg += f"Successful (text updated): {success}\n"
-        
-        if total_error_count > 0:
-            summary_msg += f"\nErrors: {total_error_count}\n"
-            summary_msg += "\nError Details (max 10):\n" + "\n".join(str(e) for e in all_errors[:10])
-            if total_error_count > 10:
-                summary_msg += "\n..."
-        
-        if total_warning_count > 0:
-            summary_msg += f"\nWarnings (variables '[...]'): {total_warning_count}\n"
-            summary_msg += "\nDetails (max 10):\n" + "\n".join(str(w) for w in all_warnings[:10])
-            if total_warning_count > 10:
-                summary_msg += "\n..."
-        
-        QMessageBox.information(self.main, tr("batch_result_title"), summary_msg)
         
         if made_changes and not canceled:
             self.main._set_current_tab_modified(True)
         
         # Update status bar
-        status_message = "Batch translation finished."
-        if canceled:
-            status_message = "Batch translation canceled."
-        elif total_error_count > 0 or total_warning_count > 0:
-            status_message += " Completed with errors/warnings."
-        
         self.main.statusBar().showMessage(status_message, 5000)
         self.main._update_ui_state()
+

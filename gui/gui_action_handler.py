@@ -26,26 +26,7 @@ from locales import tr
 from models.parsed_file import ParsedItem
 from dataclasses import replace, asdict 
 
-from PyQt6.QtWidgets import QTableWidget
-
-
-def _resolve_table_widget(main_window, file_path):
-    """
-    Resolve table widget on-demand via tab_data mapping.
-    
-    Args:
-        main_window: The RenForgeGUI instance
-        file_path: Path of the file to find table for
-        
-    Returns:
-        QTableWidget or None if not found
-    """
-    for i in range(main_window.tab_widget.count()):
-        if main_window.tab_data.get(i) == file_path:
-            widget = main_window.tab_widget.widget(i)
-            if isinstance(widget, QTableWidget):
-                return widget
-    return None
+from gui.views.file_table_view import resolve_table_widget
 
 
 def edit_with_ai(main_window):
