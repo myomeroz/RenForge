@@ -291,7 +291,7 @@ class RenForgeGUI(QMainWindow):
                     item = current_file_data.items[row_idx]
                     # Update text in translation column (column 4)
                     table_manager.update_table_item_text(
-                        current_table, row_idx, 4, item.current_text or ""
+                        self, current_table, row_idx, 4, item.current_text or ""
                     )
                     # Update row style (modified status, markers)
                     table_manager.update_table_row_style(current_table, row_idx, item)
