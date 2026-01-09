@@ -63,6 +63,11 @@ DIRECT_MODE_EDITABLE_TYPES = {
 
 }
 
+# Optional glossary for AI translation term consistency
+# Format: {"source_term": "target_term", ...}
+# Example: {"MC": "Ana Karakter", "skill points": "yetenek puanları"}
+TRANSLATION_GLOSSARY = {}
+
 __all__ = [
     "VERSION", "ABOUT_TEXT",
     "DEFAULT_TARGET_LANG", "DEFAULT_SOURCE_LANG", "DEFAULT_MODEL_NAME",
@@ -72,7 +77,7 @@ __all__ = [
     "DIRECT_MODE_EDITABLE_TYPES", "BATCH_TRANSLATE_DELAY", "resource_path",
     "TRANSLATE_BLOCK_REGEX", "OLD_STRING_REGEX", "NEW_STRING_REGEX", 
     "Path", "REQUEST_DELAY_SECONDS", "DEFAULT_AUTO_PREPARE_PROJECT",
-    "ALLOW_EMPTY_STRINGS", 
+    "ALLOW_EMPTY_STRINGS", "TRANSLATION_GLOSSARY", 
 
 ]
 

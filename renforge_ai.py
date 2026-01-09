@@ -3,6 +3,7 @@ import os
 import time
 import re
 import json
+import random
 from pathlib import Path
 import socket
 
@@ -233,6 +234,363 @@ def validate_translation_output(original: str, translated: str) -> tuple:
     
     return True, None
 
+
+# =============================================================================
+# RATE LIMITING AND BATCH TRANSLATION
+# =============================================================================
+
+# Chunk size limits for batch translation
+BATCH_CHUNK_MAX_CHARS = 6000  # Max characters per chunk
+BATCH_CHUNK_MAX_ITEMS = 50    # Max items per chunk
+
+
+def _call_gemini_with_backoff(prompt: str, max_retries: int = 4) -> tuple:
+    """
+    Call Gemini with exponential backoff + jitter on rate limits/errors.
+    
+    Args:
+        prompt: The prompt to send to Gemini
+        max_retries: Maximum number of retry attempts
+        
+    Returns:
+        Tuple of (response_text, error_message)
+    """
+    global gemini_model, no_ai
+    
+    if no_ai or gemini_model is None:
+        return (None, "Gemini model not initialized")
+    
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+    
+    for attempt in range(max_retries):
+        try:
+            response = gemini_model.generate_content(prompt, safety_settings=safety_settings)
+            
+            if not response.parts:
+                logger.warning(f"[_call_gemini_with_backoff] Empty response (attempt {attempt+1})")
+                if attempt + 1 < max_retries:
+                    time.sleep(1)
+                    continue
+                return (None, "Empty response from Gemini")
+            
+            return (response.text.strip(), None)
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            # Check for rate limit or transient errors
+            is_retryable = any(keyword in error_str for keyword in [
+                "429", "503", "quota", "rate", "limit", "timeout", 
+                "deadline", "unavailable", "resource exhausted"
+            ])
+            
+            if is_retryable and attempt + 1 < max_retries:
+                # Exponential backoff with jitter
+                delay = min(2 ** attempt + random.uniform(0, 1), 30)
+                logger.warning(f"[_call_gemini_with_backoff] Rate limit/error, retrying in {delay:.1f}s: {e}")
+                time.sleep(delay)
+                continue
+            
+            logger.error(f"[_call_gemini_with_backoff] Final error: {e}")
+            return (None, str(e))
+    
+    return (None, "Max retries exceeded")
+
+
+def translate_text_batch_gemini_strict(
+    items: list,
+    source_lang: str,
+    target_lang: str,
+    model: str = None,
+    glossary: dict = None
+) -> dict:
+    """
+    Batch translate multiple items with strict JSON contract.
+    
+    This function:
+    - Masks Ren'Py tokens to protect them during translation
+    - Uses chunking for large batches
+    - Validates token preservation
+    - Retries with repair prompt on validation failure
+    - Falls back to original text on final failure (safe mode)
+    
+    Args:
+        items: List of strings to translate
+        source_lang: Source language (e.g., 'english', 'auto' for auto-detect)
+        target_lang: Target language (e.g., 'turkish')
+        model: Optional model name (uses current gemini_model)
+        glossary: Optional dict of term mappings {source_term: target_term}
+        
+    Returns:
+        {
+          "translations": [{"i": 0, "t": "translated text"}, ...],
+          "meta": {"model": "...", "source_lang": "...", "target_lang": "..."},
+          "errors": [{"i": idx, "error": "..."}, ...]  # failed items
+        }
+    """
+    global gemini_model, no_ai
+    
+    result = {
+        "translations": [],
+        "meta": {
+            "model": model or (gemini_model.model_name if gemini_model else "unknown"),
+            "source_lang": source_lang,
+            "target_lang": target_lang
+        },
+        "errors": []
+    }
+    
+    if no_ai or gemini_model is None:
+        for i, item in enumerate(items):
+            result["errors"].append({"i": i, "error": "Gemini not initialized"})
+        return result
+    
+    if not is_internet_available():
+        for i, item in enumerate(items):
+            result["errors"].append({"i": i, "error": "No internet connection"})
+        return result
+    
+    if not items:
+        return result
+    
+    # Prepare items with masking
+    prepared_items = []
+    for i, text in enumerate(items):
+        if not text or not text.strip():
+            # Empty items get empty translation
+            result["translations"].append({"i": i, "t": ""})
+            continue
+        
+        masked_text, token_map = mask_renpy_tokens(text)
+        prepared_items.append({
+            "i": i,
+            "original": text,
+            "masked": masked_text,
+            "token_map": token_map
+        })
+    
+    if not prepared_items:
+        return result
+    
+    # Split into chunks
+    chunks = _split_into_chunks(prepared_items)
+    logger.info(f"[translate_batch_strict] Processing {len(prepared_items)} items in {len(chunks)} chunks")
+    
+    for chunk_idx, chunk in enumerate(chunks):
+        chunk_result = _translate_chunk(chunk, source_lang, target_lang, glossary)
+        result["translations"].extend(chunk_result["translations"])
+        result["errors"].extend(chunk_result["errors"])
+        
+        # Small delay between chunks
+        if chunk_idx + 1 < len(chunks):
+            time.sleep(0.5)
+    
+    # Sort translations by index
+    result["translations"].sort(key=lambda x: x["i"])
+    
+    return result
+
+
+def _split_into_chunks(items: list) -> list:
+    """Split items into chunks respecting size limits."""
+    chunks = []
+    current_chunk = []
+    current_chars = 0
+    
+    for item in items:
+        item_chars = len(item["masked"])
+        
+        # Check if adding this item would exceed limits
+        if current_chunk and (
+            current_chars + item_chars > BATCH_CHUNK_MAX_CHARS or 
+            len(current_chunk) >= BATCH_CHUNK_MAX_ITEMS
+        ):
+            chunks.append(current_chunk)
+            current_chunk = []
+            current_chars = 0
+        
+        current_chunk.append(item)
+        current_chars += item_chars
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
+
+
+def _translate_chunk(chunk: list, source_lang: str, target_lang: str, glossary: dict = None) -> dict:
+    """Translate a single chunk of items."""
+    result = {"translations": [], "errors": []}
+    
+    # Build source language instruction
+    source_instruction = f"from {source_lang}" if source_lang.lower() != "auto" else "(auto-detect source language)"
+    
+    # Build glossary instruction
+    glossary_instruction = ""
+    if glossary:
+        terms = ", ".join([f"{k}→{v}" for k, v in glossary.items()])
+        glossary_instruction = f"\n- Use these term mappings: {terms}"
+    
+    # Build indexed source list
+    items_json = json.dumps([{"i": item["i"], "s": item["masked"]} for item in chunk], ensure_ascii=False)
+    
+    prompt = f"""You are a strict translation engine for Ren'Py visual novel scripts.
+
+TASK: Translate the following texts {source_instruction} to {target_lang}.
+
+RULES:
+1. Output MUST be valid JSON only: {{"translations":[{{"i":0,"t":"..."}},{{"i":1,"t":"..."}}]}}
+2. Preserve ALL placeholders exactly: ⟦T0⟧, ⟦T1⟧, etc. - these MUST appear in the translation.
+3. Keep punctuation, spacing, and formatting intact.
+4. Translate naturally while maintaining original meaning and tone.
+5. NO explanations, NO markdown, ONLY the JSON object.{glossary_instruction}
+
+SOURCE TEXTS:
+{items_json}
+
+OUTPUT (JSON only):"""
+
+    # First attempt
+    response_text, error = _call_gemini_with_backoff(prompt)
+    
+    if error:
+        # All items in chunk fail
+        for item in chunk:
+            result["errors"].append({"i": item["i"], "error": error})
+        return result
+    
+    # Parse and validate response
+    translations = _parse_batch_response(response_text)
+    
+    if translations is None:
+        # Parsing failed, retry with stricter prompt
+        logger.warning("[translate_chunk] JSON parse failed, retrying with repair prompt")
+        translations = _retry_with_repair_prompt(prompt, chunk, response_text)
+    
+    # Process each translation
+    translated_indices = {t["i"]: t["t"] for t in translations} if translations else {}
+    
+    for item in chunk:
+        idx = item["i"]
+        
+        if idx not in translated_indices:
+            # Missing translation, use original as fallback
+            logger.warning(f"[translate_chunk] Missing translation for index {idx}, using original")
+            result["translations"].append({"i": idx, "t": item["original"]})
+            result["errors"].append({"i": idx, "error": "Translation missing from response"})
+            continue
+        
+        translated_masked = translated_indices[idx]
+        
+        # Validate token preservation
+        missing_tokens = validate_tokens_preserved(item["masked"], translated_masked, item["token_map"])
+        
+        if missing_tokens:
+            # Try to repair
+            repaired = _repair_single_item(item, translated_masked, missing_tokens, target_lang)
+            if repaired:
+                translated_masked = repaired
+            else:
+                # Fallback to original
+                logger.warning(f"[translate_chunk] Token validation failed for {idx}, using original")
+                result["translations"].append({"i": idx, "t": item["original"]})
+                result["errors"].append({"i": idx, "error": f"Missing tokens: {missing_tokens}"})
+                continue
+        
+        # Unmask and clean up
+        final_translation = unmask_renpy_tokens(translated_masked, item["token_map"])
+        
+        # Post-processing cleanup
+        if final_translation:
+            if final_translation.startswith(":"):
+                final_translation = final_translation.lstrip(": ").strip()
+            elif final_translation.startswith("- ") and not item["original"].startswith("-"):
+                final_translation = final_translation.lstrip("- ").strip()
+        
+        result["translations"].append({"i": idx, "t": final_translation})
+    
+    return result
+
+
+def _parse_batch_response(response_text: str) -> list:
+    """Parse batch translation response JSON."""
+    if not response_text:
+        return None
+    
+    try:
+        # Remove markdown code blocks if present
+        text = response_text.strip()
+        if text.startswith("```"):
+            lines = text.split('\n')
+            lines = [l for l in lines if not l.startswith("```")]
+            text = '\n'.join(lines).strip()
+        
+        data = json.loads(text)
+        
+        if isinstance(data, dict) and "translations" in data:
+            return data["translations"]
+        elif isinstance(data, list):
+            return data
+        
+    except json.JSONDecodeError:
+        # Try regex extraction
+        pattern = r'\{"i"\s*:\s*(\d+)\s*,\s*"t"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"\}'
+        matches = re.findall(pattern, response_text)
+        if matches:
+            return [{"i": int(m[0]), "t": m[1].replace('\\"', '"')} for m in matches]
+    
+    return None
+
+
+def _retry_with_repair_prompt(original_prompt: str, chunk: list, failed_response: str) -> list:
+    """Retry translation with a repair prompt after JSON parse failure."""
+    token_list = set()
+    for item in chunk:
+        token_list.update(item["token_map"].keys())
+    
+    repair_prompt = f"""Your previous response was malformed. Output ONLY valid JSON.
+
+REQUIRED FORMAT:
+{{"translations":[{{"i":0,"t":"text"}},{{"i":1,"t":"text"}}]}}
+
+CRITICAL: Include these exact tokens in translations: {', '.join(sorted(token_list))}
+
+Previous failed response (DO NOT repeat this error):
+{failed_response[:500]}
+
+{original_prompt}"""
+    
+    response_text, error = _call_gemini_with_backoff(repair_prompt)
+    if error:
+        return None
+    
+    return _parse_batch_response(response_text)
+
+
+def _repair_single_item(item: dict, translated: str, missing_tokens: list, target_lang: str) -> str:
+    """Attempt to repair a single translation with missing tokens."""
+    repair_prompt = f"""Fix this translation. CRITICAL: Include these exact tokens: {', '.join(missing_tokens)}
+
+Original (masked): {item["masked"]}
+Bad translation: {translated}
+
+Output ONLY the fixed translation to {target_lang}, nothing else:"""
+    
+    response_text, error = _call_gemini_with_backoff(repair_prompt, max_retries=2)
+    if error:
+        return None
+    
+    # Check if repair worked
+    missing = validate_tokens_preserved(item["masked"], response_text, item["token_map"])
+    if missing:
+        return None
+    
+    return response_text
 
 def translate_text_batch_gemini(
     text: str,
