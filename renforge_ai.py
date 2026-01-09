@@ -1396,25 +1396,22 @@ def refine_text_with_gemini(original_text, current_text, user_instruction, conte
 
     if mode == "translate":
         prompt = (
-            f"You are an expert translator and editor for a Ren'Py visual novel script.\n"
-            f"Your task is to provide a high-quality translation of the 'Original Text' into {target_lang}.\n"
-            f"If the 'Current Translation' is helpful, you may use it as a starting point, but you MUST output in {target_lang}.\n"
+            f"You are an expert editor revising translations for a Ren'Py visual novel script.\n"
+            f"Your task is to refine the 'Current Translation' based on the 'Original Text' and the 'User Instruction', considering the provided 'Context'.\n"
             f"{character_info}\n"
             f"Source Language: {source_lang}\n"
             f"Target Language: {target_lang}\n\n"
-            f"Original Text ({source_lang}):\n\"\"\"\n{original_text}\n\"\"\"\n\n"
-            f"Current Translation (may be in wrong language or empty):\n\"\"\"\n{current_text}\n\"\"\"\n\n"
+            f"Original Text:\n\"\"\"\n{original_text}\n\"\"\"\n\n"
+            f"Current Translation:\n\"\"\"\n{current_text}\n\"\"\"\n\n"
             f"User Instruction:\n\"\"\"\n{user_instruction}\n\"\"\"\n\n"
             f"{context_prompt}"
-            f"CRITICAL Constraints:\n"
-            f"- Your output MUST be in {target_lang} language. This is non-negotiable.\n"
-            f"- Translate from the Original Text, not from the Current Translation.\n"
+            f"Constraints:\n"
             f"- Preserve the original meaning and intent.\n"
             f"- Maintain the character's voice and tone (if applicable).\n"
-            f"- Ensure grammatical correctness and natural phrasing in {target_lang}.\n"
+            f"- Ensure grammatical correctness and natural phrasing in the *{target_lang}* language.\n"
             f"- Keep Ren'Py tags (like {{w}}, {{p}}) and text variables (like [variable_name]) unchanged.\n"
-            f"- ONLY output the translation text, without any explanations or quotation marks.\n\n"
-            f"Translation ({target_lang}):\n"
+            f"- ONLY output the refined translation text, without any explanations or quotation marks around it.\n\n"
+            f"Refined Translation ({target_lang}):\n"
         )
     else: 
         prompt = (
