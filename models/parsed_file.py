@@ -143,6 +143,7 @@ class ParsedFile:
         # State
         self._item_index = -1
         self._is_modified = False
+        self.breakpoint_modified = False
         
         # Observer pattern - callbacks for change notifications
         self._observers: Dict[str, List[Callable]] = {
