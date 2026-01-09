@@ -159,6 +159,10 @@ class BatchAIWorker(QRunnable):
                     break
                     
             except Exception as e:
+                import traceback
+                error_trace = traceback.format_exc()
+                logger.error(f"BatchAIWorker Error details:\n{error_trace}")
+                
                 # Whole batch failed?
                 results['error_count'] += len(batch_items)
                 results['errors'].append(f"Batch Error (lines {valid_indices[0]}...): {str(e)}")

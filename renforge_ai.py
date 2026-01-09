@@ -11,7 +11,7 @@ from renforge_logger import get_logger
 logger = get_logger("ai")
 
 import renforge_config as config
-import renforge_settings as set
+
 from renforge_exceptions import APIKeyError, ModelError, TranslationError, NetworkError
 
 genai = None
