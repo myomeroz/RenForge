@@ -121,6 +121,9 @@ class FileController(QObject):
                 return None
             
             # Create ParsedFile
+            # Set language/model to None so UI preserves user's current selection
+            # Only store detected_lang if use_detected_target_lang setting is enabled
+            use_detected = self._settings.use_detected_target_lang
             parsed_file = ParsedFile(
                 file_path=file_path,
                 mode=file_mode,
@@ -128,9 +131,9 @@ class FileController(QObject):
                 items=items,
                 breakpoints=breakpoints,
                 output_path=output_path or file_path,
-                target_language=detected_lang or self._settings.default_target_language,
-                source_language=self._settings.default_source_language,
-                selected_model=self._settings.default_model
+                target_language=detected_lang if use_detected and detected_lang else None,
+                source_language=None,  # Use UI's current selection
+                selected_model=None    # Use UI's current selection
             )
             
             # Add to project

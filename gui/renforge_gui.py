@@ -407,13 +407,18 @@ class RenForgeGUI(QMainWindow):
 
         current_file_data = self._get_current_file_data()
 
-        default_target_lang_code = self.settings.get("default_target_language", config.DEFAULT_TARGET_LANG)
-        default_source_lang_code = self.settings.get("default_source_language", config.DEFAULT_SOURCE_LANG)
-        default_model = self.settings.get("default_selected_model", config.DEFAULT_MODEL_NAME)
-
-        target_lang_code_to_set = default_target_lang_code
-        source_lang_code_to_set = default_source_lang_code
-        model_to_set = default_model
+        # Use current window settings as starting point (preserve user's existing selection)
+        target_lang_code_to_set = self.target_language
+        source_lang_code_to_set = self.source_language
+        model_to_set = self.selected_model
+        
+        # Use defaults only if no active selection exists
+        if target_lang_code_to_set is None:
+            target_lang_code_to_set = self.settings.get("default_target_language", config.DEFAULT_TARGET_LANG)
+        if source_lang_code_to_set is None:
+            source_lang_code_to_set = self.settings.get("default_source_language", config.DEFAULT_SOURCE_LANG)
+        if model_to_set is None:
+            model_to_set = self.settings.get("default_selected_model", config.DEFAULT_MODEL_NAME)
 
         if current_file_data:
             tab_mode = current_file_data.mode
@@ -424,17 +429,18 @@ class RenForgeGUI(QMainWindow):
 
             use_detected_setting = self.settings.get("use_detected_target_lang", config.DEFAULT_USE_DETECTED_TARGET_LANG)
 
+            # Only override if file has an explicit value set
             if tab_mode == 'translate' and use_detected_setting and tab_target_lang_code:
-
                 target_lang_code_to_set = tab_target_lang_code
             elif tab_target_lang_code:
-
                  target_lang_code_to_set = tab_target_lang_code
 
             if tab_source_lang_code:
                 source_lang_code_to_set = tab_source_lang_code
 
-            model_to_set = tab_model
+            # Only use tab model if explicitly set (not None)
+            if tab_model is not None:
+                model_to_set = tab_model
 
         self.target_language = target_lang_code_to_set
         self.source_language = source_lang_code_to_set

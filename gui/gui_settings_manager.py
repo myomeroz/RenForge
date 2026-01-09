@@ -163,8 +163,9 @@ def handle_model_changed(main_window):
 
     current_data = main_window._get_current_file_data()
     if current_data:
-        if current_data.get('selected_model') != new_model:
-            current_data['selected_model'] = new_model
+        # ParsedFile is an object, not a dict. Check attribute existence or use getattr.
+        if getattr(current_data, 'selected_model', None) != new_model:
+            current_data.selected_model = new_model
             logger.debug(f"Updated selected_model for tab '{os.path.basename(main_window.current_file_path)}' to: {new_model}")
     else:
          logger.debug("No active tab data to update.")
