@@ -26,6 +26,26 @@ from locales import tr
 from models.parsed_file import ParsedItem
 from dataclasses import replace, asdict 
 
+from PyQt6.QtWidgets import QTableWidget
+
+
+def _resolve_table_widget(main_window, file_path):
+    """
+    Resolve table widget on-demand via tab_data mapping.
+    
+    Args:
+        main_window: The RenForgeGUI instance
+        file_path: Path of the file to find table for
+        
+    Returns:
+        QTableWidget or None if not found
+    """
+    for i in range(main_window.tab_widget.count()):
+        if main_window.tab_data.get(i) == file_path:
+            widget = main_window.tab_widget.widget(i)
+            if isinstance(widget, QTableWidget):
+                return widget
+    return None
 
 
 def edit_with_ai(main_window):
@@ -62,7 +82,7 @@ def edit_with_ai(main_window):
 
     current_items = current_file_data.items
     current_mode = current_file_data.mode
-    table_widget = getattr(current_file_data, 'table_widget', None)
+    table_widget = _resolve_table_widget(main_window, current_file_data.file_path)
 
     if not current_items or not current_mode or not table_widget or not (0 <= item_index < len(current_items)):
         logger.error("edit_with_ai - Invalid data state.")
@@ -116,7 +136,7 @@ def translate_with_google(main_window):
 
     current_items = current_file_data.items
     current_mode = current_file_data.mode
-    table_widget = getattr(current_file_data, 'table_widget', None)
+    table_widget = _resolve_table_widget(main_window, current_file_data.file_path)
 
     if not current_items or not current_mode or not table_widget or not (0 <= item_index < len(current_items)):
         logger.error("translate_with_google - Invalid data state.")
