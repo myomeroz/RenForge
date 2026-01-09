@@ -244,13 +244,14 @@ BATCH_CHUNK_MAX_CHARS = 6000  # Max characters per chunk
 BATCH_CHUNK_MAX_ITEMS = 50    # Max items per chunk
 
 
-def _call_gemini_with_backoff(prompt: str, max_retries: int = 4) -> tuple:
+def _call_gemini_with_backoff(prompt: str, max_retries: int = 4, json_mode: bool = False) -> tuple:
     """
     Call Gemini with exponential backoff + jitter on rate limits/errors.
     
     Args:
         prompt: The prompt to send to Gemini
         max_retries: Maximum number of retry attempts
+        json_mode: If True, force JSON output mode
         
     Returns:
         Tuple of (response_text, error_message)
@@ -267,9 +268,24 @@ def _call_gemini_with_backoff(prompt: str, max_retries: int = 4) -> tuple:
         {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
     ]
     
+    # Generation config for JSON mode
+    generation_config = None
+    if json_mode:
+        try:
+            generation_config = {"response_mime_type": "application/json"}
+        except Exception:
+            pass  # SDK version may not support it
+    
     for attempt in range(max_retries):
         try:
-            response = gemini_model.generate_content(prompt, safety_settings=safety_settings)
+            if generation_config:
+                response = gemini_model.generate_content(
+                    prompt, 
+                    safety_settings=safety_settings,
+                    generation_config=generation_config
+                )
+            else:
+                response = gemini_model.generate_content(prompt, safety_settings=safety_settings)
             
             if not response.parts:
                 logger.warning(f"[_call_gemini_with_backoff] Empty response (attempt {attempt+1})")
@@ -523,7 +539,7 @@ Your failed response started with: {last_response[:200] if last_response else 'N
 
 {base_prompt}"""
         
-        response_text, error = _call_gemini_with_backoff(prompt)
+        response_text, error = _call_gemini_with_backoff(prompt, json_mode=True)
         
         if error:
             last_error = error
@@ -872,11 +888,11 @@ OUTPUT (JSON only):"""
             response = gemini_model.generate_content(prompt, safety_settings=safety_settings)
             
             if not response.parts:
-                logger.warning(f"[translate_batch] Empty response from Gemini (attempt {attempt+1})")
+                logger.warning(f"[translate_batch_legacy] Empty response from Gemini (attempt {attempt+1})")
                 continue
             
             raw_output = response.text.strip()
-            logger.debug(f"[translate_batch] Raw output: {raw_output[:200]}...")
+            logger.debug(f"[translate_batch_legacy] Raw output: {raw_output[:200]}...")
             
             # Parse JSON output
             translated = None
@@ -904,7 +920,7 @@ OUTPUT (JSON only):"""
                     if not raw_output.startswith('{') and len(raw_output) > 0:
                         translated = raw_output
                     else:
-                        logger.warning(f"[translate_batch] Failed to parse JSON: {raw_output[:100]}")
+                        logger.warning(f"[translate_batch_legacy] Failed to parse JSON: {raw_output[:100]}")
                         continue
             
             if not translated:
@@ -913,7 +929,7 @@ OUTPUT (JSON only):"""
             # Validate token preservation
             missing_tokens = validate_tokens_preserved(masked_text, translated, token_map)
             if missing_tokens:
-                logger.warning(f"[translate_batch] Missing tokens: {missing_tokens}")
+                logger.warning(f"[translate_batch_legacy] Missing tokens: {missing_tokens}")
                 if attempt + 1 < max_attempts:
                     # Retry with stricter prompt
                     prompt = prompt.replace(

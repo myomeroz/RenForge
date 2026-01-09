@@ -82,20 +82,26 @@ class BatchAIWorker(QRunnable):
                 target_lang = self.target_lang
                 source_lang = self.source_lang
                 
-                # Use strict batch translation
-                result = ai.translate_text_batch_gemini(
-                    text=text,
+                # Use strict batch translation (single-item for per-item progress updates)
+                batch_result = ai.translate_text_batch_gemini_strict(
+                    items=[text],  # Single item list
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    character_tag=getattr(item, 'character_tag', None)
+                    glossary=getattr(config, 'TRANSLATION_GLOSSARY', None)
                 )
                 
-                # Unpack result
-                if isinstance(result, tuple):
-                    translated, error_msg = result
-                else:
-                    translated = result
-                    error_msg = None
+                # Extract result
+                translated = None
+                error_msg = None
+                
+                if batch_result.get("translations"):
+                    trans_item = batch_result["translations"][0]
+                    translated = trans_item.get("t")
+                    if trans_item.get("fallback"):
+                        error_msg = trans_item.get("error_reason", "Fallback to original")
+                
+                if batch_result.get("errors"):
+                    error_msg = batch_result["errors"][0].get("error", error_msg)
                 
                 if self._is_canceled:
                     results['canceled'] = True
