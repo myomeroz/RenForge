@@ -44,6 +44,9 @@ try:
     import gui.gui_settings_manager as settings_manager
     import gui.gui_status_updater as status_updater
     import gui.views.settings_view as settings_view
+    from gui.widgets.batch_summary_panel import BatchSummaryPanel
+    from gui.widgets.filter_toolbar import FilterToolbar
+    from models.batch_undo import get_undo_manager
 
 except ImportError as e:
      logger.critical(f"Failed to import required renforge modules or GUI managers: {e}")
@@ -152,6 +155,17 @@ class RenForgeGUI(QMainWindow):
         self.batch_controller = None
         
         self.setStyleSheet(DARK_STYLE_SHEET)
+        
+        # Stage 5: Add BatchSummaryPanel dock
+        self.batch_summary_panel = BatchSummaryPanel(self)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.batch_summary_panel)
+        self.batch_summary_panel.undo_requested.connect(self._handle_undo_requested)
+        self.batch_summary_panel.hide()  # Hidden until first batch
+        
+        # Stage 5: Add FilterToolbar (will be added to central widget later)
+        self.filter_toolbar = FilterToolbar(self)
+        self.filter_toolbar.filter_changed.connect(self._handle_filter_changed)
+        
         self._update_ui_state() 
 
         QTimer.singleShot(100, self._perform_initial_checks) 
@@ -202,8 +216,80 @@ class RenForgeGUI(QMainWindow):
 
     @pyqtSlot(dict)
     def _handle_batch_translate_finished(self, results):
-        """Delegate to BatchController."""
+        """Delegate to BatchController and update summary panel."""
         self.batch_controller.handle_finished(results)
+        
+        # Update summary panel
+        self.batch_summary_panel.update_summary(results)
+        self.batch_summary_panel.show()
+        
+        # Check if undo is available
+        current_file_data = self._get_current_file_data()
+        if current_file_data:
+            undo_mgr = get_undo_manager()
+            self.batch_summary_panel.set_undo_available(
+                undo_mgr.has_undo(current_file_data.file_path)
+            )
+    
+    @pyqtSlot(str)
+    def _handle_filter_changed(self, filter_type: str):
+        """Handle filter selection change from FilterToolbar."""
+        current_table = self._get_current_table()
+        current_file_data = self._get_current_file_data()
+        
+        if not current_table or not current_file_data:
+            return
+        
+        if filter_type == "all":
+            visible = table_manager.clear_filter(current_table)
+            self.filter_toolbar.set_info(f"{visible} rows")
+        else:
+            visible = table_manager.filter_table_rows(
+                current_table, current_file_data.items, filter_type
+            )
+            total = len(current_file_data.items)
+            self.filter_toolbar.set_info(f"Showing {visible}/{total}")
+    
+    @pyqtSlot()
+    def _handle_undo_requested(self):
+        """Handle Undo Last Batch request."""
+        current_file_data = self._get_current_file_data()
+        current_table = self._get_current_table()
+        
+        if not current_file_data or not current_table:
+            self.statusBar().showMessage("No active file to undo", 3000)
+            return
+        
+        undo_mgr = get_undo_manager()
+        
+        if not undo_mgr.has_undo(current_file_data.file_path):
+            self.statusBar().showMessage("No batch to undo", 3000)
+            return
+        
+        snapshot = undo_mgr.get_snapshot(current_file_data.file_path)
+        row_count = snapshot.row_count() if snapshot else 0
+        
+        reply = QMessageBox.question(
+            self, "Confirm Undo",
+            f"Undo last batch translation?\n\nThis will revert {row_count} rows to their previous state.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        # Perform restore
+        if undo_mgr.restore(current_file_data.file_path, current_file_data.items):
+            # Update table display
+            table_manager.populate_table(current_table, current_file_data.items, current_file_data.mode)
+            self._set_current_tab_modified(True)
+            self.statusBar().showMessage(f"Reverted {row_count} rows", 4000)
+            
+            # Update undo button state
+            self.batch_summary_panel.set_undo_available(False)
+        else:
+            self.statusBar().showMessage("Undo failed", 4000)
 
     def _perform_initial_checks(self):
 

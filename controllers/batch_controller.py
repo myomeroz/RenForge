@@ -14,6 +14,7 @@ from locales import tr
 import parser.core as parser
 import gui.gui_table_manager as table_manager
 from gui.views import batch_status_view, file_table_view
+from models.batch_undo import get_undo_manager
 
 
 class BatchController(QObject):
@@ -54,6 +55,21 @@ class BatchController(QObject):
     @property
     def warnings(self):
         return self._warnings
+    
+    def capture_undo_snapshot(self, file_path: str, row_indices: list, items: list, 
+                              batch_type: str = "ai"):
+        """
+        Capture undo snapshot before batch operation starts.
+        
+        Args:
+            file_path: Path of the file being processed
+            row_indices: List of row indices that will be affected
+            items: List of ParsedItem objects (full file items)
+            batch_type: "ai" or "google"
+        """
+        undo_mgr = get_undo_manager()
+        undo_mgr.capture(file_path, row_indices, items, batch_type)
+        logger.debug(f"[BatchController] Captured undo snapshot for {len(row_indices)} rows")
     
     @pyqtSlot(int, str, dict)
     def handle_item_updated(self, item_index: int, translated_text: str, updated_item_data_copy: dict = None):

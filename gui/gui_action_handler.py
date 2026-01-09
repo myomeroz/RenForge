@@ -205,6 +205,14 @@ def batch_translate_google(main_window):
     progress.setAutoClose(False)
     progress.setAutoReset(False) 
 
+    # Capture undo snapshot before starting batch
+    main_window.batch_controller.capture_undo_snapshot(
+        current_file_data.file_path, 
+        selected_rows_indices, 
+        current_file_data.items,
+        batch_type="google"
+    )
+
     # Start via controller
     try:
         worker, signals = controller.translation_controller.start_batch_google_translation(
@@ -335,6 +343,14 @@ def batch_translate_ai(main_window):
     progress.setWindowModality(Qt.WindowModality.WindowModal)
     progress.setAutoClose(False)
     progress.setAutoReset(False)
+    
+    # Capture undo snapshot before starting batch
+    main_window.batch_controller.capture_undo_snapshot(
+        current_file_data.file_path, 
+        selected_rows_indices, 
+        current_file_data.items,
+        batch_type="ai"
+    )
     
     # 5. Start Task via Controller
     try:

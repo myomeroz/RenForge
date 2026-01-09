@@ -24,8 +24,8 @@ from renforge_enums import ItemType
 def create_table_widget(main_window):
 
     table = QTableWidget()
-    table.setColumnCount(7) 
-    table.setHorizontalHeaderLabels(['#', 'Type', 'Tag', 'Original', 'Editable', 'Mod.', 'Marker']) 
+    table.setColumnCount(8)  # Added Status column
+    table.setHorizontalHeaderLabels(['#', 'Type', 'Tag', 'Original', 'Editable', 'Mod.', 'BP', 'Status']) 
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     table.verticalHeader().setVisible(False)
@@ -39,7 +39,8 @@ def create_table_widget(main_window):
     header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch) 
     header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch) 
     header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents) 
-    header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents) 
+    header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+    header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Status column 
 
     table.itemSelectionChanged.connect(lambda: handle_item_selection_changed(main_window))
     table.currentItemChanged.connect(lambda current, previous: handle_current_item_changed(main_window, current, previous))
@@ -86,6 +87,21 @@ def populate_table(table_widget: QTableWidget, items_list: list, mode: str):
         item_edited = QTableWidgetItem(edited_text)
         item_modified = QTableWidgetItem(modified_status)
         item_breakpoint = QTableWidgetItem(breakpoint_status)
+        
+        # Batch marker column
+        batch_marker = getattr(item, 'batch_marker', None) or ""
+        batch_tooltip = getattr(item, 'batch_tooltip', None) or ""
+        if batch_marker == "AI_FAIL":
+            marker_display = "🔴"
+        elif batch_marker == "AI_WARN":
+            marker_display = "⚠️"
+        elif batch_marker == "OK":
+            marker_display = "✅"
+        else:
+            marker_display = ""
+        item_status = QTableWidgetItem(marker_display)
+        if batch_tooltip:
+            item_status.setToolTip(batch_tooltip)
 
         flags_uneditable = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
         flags_editable = flags_uneditable | Qt.ItemFlag.ItemIsEditable
@@ -96,9 +112,11 @@ def populate_table(table_widget: QTableWidget, items_list: list, mode: str):
         item_edited.setFlags(flags_editable)
         item_modified.setFlags(flags_uneditable)
         item_breakpoint.setFlags(flags_uneditable)
+        item_status.setFlags(flags_uneditable)
 
         item_modified.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         item_breakpoint.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        item_status.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
         tooltip = f"Index: {i}, Line: {line_num_str}, Type: {item_type}" 
         if display_tag: tooltip += f", Name: {display_tag}" 
@@ -117,6 +135,7 @@ def populate_table(table_widget: QTableWidget, items_list: list, mode: str):
         table_widget.setItem(i, 4, item_edited)
         table_widget.setItem(i, 5, item_modified)
         table_widget.setItem(i, 6, item_breakpoint)
+        table_widget.setItem(i, 7, item_status)  # New Status column
 
         update_table_row_style(table_widget, i, item) 
 
@@ -458,3 +477,96 @@ def revert_all_items(main_window):
         else:
 
             main_window.statusBar().showMessage("Failed to revert changes (internal error?).", 5000)
+
+
+def update_row_batch_marker(table_widget: QTableWidget, row_index: int, 
+                            marker: str = None, tooltip: str = None):
+    """
+    Update the batch marker status column for a specific row.
+    
+    Args:
+        table_widget: The QTableWidget
+        row_index: Row to update
+        marker: "AI_FAIL", "AI_WARN", "OK", or None
+        tooltip: Reason text for the marker
+    """
+    if not table_widget or not (0 <= row_index < table_widget.rowCount()):
+        return
+    
+    # Determine display emoji
+    if marker == "AI_FAIL":
+        marker_display = "🔴"
+    elif marker == "AI_WARN":
+        marker_display = "⚠️"
+    elif marker == "OK":
+        marker_display = "✅"
+    else:
+        marker_display = ""
+    
+    status_item = table_widget.item(row_index, 7)  # Status column
+    if status_item:
+        status_item.setText(marker_display)
+        if tooltip:
+            status_item.setToolTip(tooltip)
+        else:
+            status_item.setToolTip("")
+
+
+def filter_table_rows(table_widget: QTableWidget, items_list: list, filter_type: str) -> int:
+    """
+    Filter table rows based on batch marker or modification status.
+    
+    Args:
+        table_widget: The QTableWidget to filter
+        items_list: List of ParsedItem objects
+        filter_type: "all", "ai_fail", "ai_warn", or "changed"
+        
+    Returns:
+        Number of visible rows after filtering
+    """
+    if not table_widget or not items_list:
+        return 0
+    
+    visible_count = 0
+    
+    for i, item in enumerate(items_list):
+        if i >= table_widget.rowCount():
+            break
+        
+        should_show = True
+        
+        if filter_type == "ai_fail":
+            batch_marker = getattr(item, 'batch_marker', None)
+            should_show = (batch_marker == "AI_FAIL")
+        elif filter_type == "ai_warn":
+            batch_marker = getattr(item, 'batch_marker', None)
+            should_show = (batch_marker == "AI_WARN")
+        elif filter_type == "changed":
+            should_show = item.is_modified_session
+        # else filter_type == "all" -> show all
+        
+        table_widget.setRowHidden(i, not should_show)
+        if should_show:
+            visible_count += 1
+    
+    return visible_count
+
+
+def clear_filter(table_widget: QTableWidget) -> int:
+    """
+    Clear filter and show all rows.
+    
+    Args:
+        table_widget: The QTableWidget
+        
+    Returns:
+        Total number of rows
+    """
+    if not table_widget:
+        return 0
+    
+    row_count = table_widget.rowCount()
+    for i in range(row_count):
+        table_widget.setRowHidden(i, False)
+    
+    return row_count

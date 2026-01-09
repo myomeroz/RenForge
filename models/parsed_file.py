@@ -56,6 +56,10 @@ class ParsedItem:
     block_language: Optional[str] = None
     character_tag: Optional[str] = None
     variable_name: Optional[str] = None
+    
+    # Batch translation markers
+    batch_marker: Optional[str] = None     # "AI_FAIL" | "AI_WARN" | "OK" | None
+    batch_tooltip: Optional[str] = None    # Reason text for marker
 
     def get_text(self) -> str:
         """Get the current text content."""
