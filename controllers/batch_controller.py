@@ -81,23 +81,17 @@ class BatchController(QObject):
         current_lines = current_file_data.lines
         current_mode = current_file_data.mode
         
-        # Robustly find table widget
-        table_widget = getattr(current_file_data, 'table_widget', None)
-        
-        # Fallback: Find tab with this file path if model reference is missing
-        if not table_widget:
-             for i in range(self.main.tab_widget.count()):
-                 if self.main.tab_data.get(i) == current_file_data.file_path:
-                      widget = self.main.tab_widget.widget(i)
-                      if isinstance(widget, QTableWidget):
-                           table_widget = widget
-                           # Cache it back to model to save future lookups
-                           current_file_data.table_widget = table_widget
-                           logger.info(f"Restored missing table_widget reference for {current_file_data.file_path}")
-                      break
+        # Resolve table widget on-demand via tab_data
+        table_widget = None
+        for i in range(self.main.tab_widget.count()):
+            if self.main.tab_data.get(i) == current_file_data.file_path:
+                widget = self.main.tab_widget.widget(i)
+                if isinstance(widget, QTableWidget):
+                    table_widget = widget
+                    break
         
         if not table_widget:
-            logger.error(f"Batch update failed: Valid file data but NO table widget found for {current_file_data.file_path}")
+            logger.error(f"Batch update failed: No table widget found for {current_file_data.file_path}")
             return
 
         if not current_items or not current_lines or not current_mode:

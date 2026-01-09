@@ -148,10 +148,6 @@ def close_tab(main_window, index):
             data_entry: ParsedFile = main_window.file_data[file_path]
             # No need to manually clear items/lines/breakpoints since ParsedFile manages its own state
             # and proper garbage collection will handle it when references are dropped.
-
-            # Dynamic attribute cleanup
-            if hasattr(data_entry, 'table_widget'):
-                data_entry.table_widget = None
         except Exception as e:
             logger.warning(f"Error during pre-removal cleanup: {e}")
         del main_window.file_data[file_path]
