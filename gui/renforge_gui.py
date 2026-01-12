@@ -9,7 +9,8 @@ logger = get_logger("gui")
 
 try:
     from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                               QMessageBox, QTabWidget, QSplitter, QTableWidget) 
+                               QMessageBox, QTabWidget, QSplitter, QTableWidget,
+                               QDockWidget, QLabel, QTableView) 
     from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize, pyqtSlot, QDir
     from PyQt6.QtGui import QFont, QIcon, QFileSystemModel 
     GUI_AVAILABLE = True
@@ -25,7 +26,7 @@ try:
     import renforge_core as core
     import renforge_ai as ai 
     import parser.core as parser
-    from renforge_settings import save_settings
+    from renforge_settings import save_settings, load_settings
     from locales import tr 
     from models.parsed_file import ParsedFile, ParsedItem
     from renforge_enums import FileMode, ItemType 
@@ -46,6 +47,12 @@ try:
     import gui.views.settings_view as settings_view
     from gui.widgets.batch_summary_panel import BatchSummaryPanel
     from gui.widgets.filter_toolbar import FilterToolbar
+    from gui.widgets.glossary_panel import GlossaryPanel
+    from gui.widgets.qa_panel import QAPanel
+    from gui.widgets.review_panel import ReviewPanel
+    from gui.widgets.preflight_panel import PreflightPanel
+    from gui.widgets.tm_panel import TMPanel
+    from gui.widgets.plugin_settings_widget import PluginSettingsWidget
     from models.batch_undo import get_undo_manager
 
 except ImportError as e:
@@ -119,6 +126,16 @@ class RenForgeGUI(QMainWindow):
         self.search_input = None
         self.replace_input = None
         self.regex_checkbox = None
+        
+        # Search UI (Stage 8.1)
+        self.search_scope_combo = None
+        self.search_safe_mode_chk = None
+        self.find_prev_btn = None
+        self.search_info_label = None
+        
+        # Search Manager
+        from core.search_manager import SearchManager
+        self.search_manager = SearchManager(self)
 
         # Note: _batch_errors, _batch_warnings etc. are now managed by BatchController
         # and exposed as @property for backward compatibility
@@ -131,6 +148,7 @@ class RenForgeGUI(QMainWindow):
         settings_manager.load_initial_settings(self)
 
         self._restore_window_geometry() 
+        # State restoration happens in _init_workspace now for docks 
 
         self.target_language = self.settings.get("default_target_language", config.DEFAULT_TARGET_LANG)
         self.source_language = self.settings.get("default_source_language", config.DEFAULT_SOURCE_LANG)
@@ -143,10 +161,15 @@ class RenForgeGUI(QMainWindow):
 
         self.file_system_model = QFileSystemModel()
 
-        # Use UIBuilder to create UI components
+        # Stage 5: Create FilterToolbar (created before layout assembly)
+        from gui.widgets.filter_toolbar import FilterToolbar
+        self.filter_toolbar = FilterToolbar() 
+        self.filter_toolbar.filter_changed.connect(self._handle_filter_changed)
+        # self.filter_toolbar.hide() # Don't hide, UIBuilder will add it.
+
+        # Use UIBuilder (instantiate mainly)
         ui_builder = UIBuilder(self)
         ui_builder.assemble_layout()
-        ui_builder.build_menu_bar()
         
         # NOTE: ProjectController and BatchController are now created and assigned
         # by app_bootstrap.py via DI container. These attributes will be set there.
@@ -156,16 +179,13 @@ class RenForgeGUI(QMainWindow):
         
         self.setStyleSheet(DARK_STYLE_SHEET)
         
-        # Stage 5: Add BatchSummaryPanel dock
-        self.batch_summary_panel = BatchSummaryPanel(self)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.batch_summary_panel)
-        self.batch_summary_panel.undo_requested.connect(self._handle_undo_requested)
-        self.batch_summary_panel.hide()  # Hidden until first batch
+        # Stage 14: Workspace Init
+        self._init_workspace()
+
+        # Build Menus LAST so they can reference docks
+        ui_builder.build_menu_bar()
         
-        # Stage 5: Create FilterToolbar (not added to layout yet - for future integration)
-        self.filter_toolbar = FilterToolbar()  # No parent - will be added to layout later
-        self.filter_toolbar.filter_changed.connect(self._handle_filter_changed)
-        self.filter_toolbar.hide()  # Hidden until integrated into UI
+
         
         self._update_ui_state() 
 
@@ -224,6 +244,10 @@ class RenForgeGUI(QMainWindow):
         self.batch_summary_panel.update_summary(results)
         self.batch_summary_panel.show()
         
+        # Stage 9: Auto-Run QA
+        if hasattr(self, 'qa_panel') and self.qa_panel.auto_chk.isChecked():
+            self.qa_panel.run_scan()
+        
         # Check if undo is available
         current_file_data = self._get_current_file_data()
         if current_file_data:
@@ -241,15 +265,49 @@ class RenForgeGUI(QMainWindow):
         if not current_table or not current_file_data:
             return
         
-        if filter_type == "all":
-            visible = table_manager.clear_filter(current_table)
-            self.filter_toolbar.set_info(f"{visible} rows")
+        # TranslationTableView için proxy model üzerinden filtreleme
+        from gui.views.translation_table_view import TranslationTableView
+        
+        if isinstance(current_table, TranslationTableView):
+            # Yeni Model-View: Proxy model filtreleme kullanır
+            from gui.views import file_table_view
+            proxy = file_table_view.get_proxy_model(current_table)
+            
+            if proxy:
+                if filter_type == "all":
+                    proxy.clear_filters()
+                    visible = proxy.rowCount()
+                elif filter_type == "changed":
+                    proxy.set_status_filter(proxy.FILTER_MODIFIED)
+                    visible = proxy.rowCount()
+                elif filter_type == "ai_fail":
+                    proxy.set_status_filter(proxy.FILTER_FAILED)
+                    visible = proxy.rowCount()
+                elif filter_type == "ai_warn":
+                    proxy.set_status_filter(proxy.FILTER_WARNING)
+                    visible = proxy.rowCount()
+                elif filter_type == "empty":
+                    proxy.set_status_filter(proxy.FILTER_EMPTY)
+                    visible = proxy.rowCount()
+                else:
+                    visible = proxy.rowCount()
+                
+                total = len(current_file_data.items)
+                if filter_type == "all":
+                    self.filter_toolbar.set_info(f"{visible} rows")
+                else:
+                    self.filter_toolbar.set_info(f"Showing {visible}/{total}")
         else:
-            visible = table_manager.filter_table_rows(
-                current_table, current_file_data.items, filter_type
-            )
-            total = len(current_file_data.items)
-            self.filter_toolbar.set_info(f"Showing {visible}/{total}")
+            # Eski QTableWidget davranışı
+            if filter_type == "all":
+                visible = table_manager.clear_filter(current_table)
+                self.filter_toolbar.set_info(f"{visible} rows")
+            else:
+                visible = table_manager.filter_table_rows(
+                    current_table, current_file_data.items, filter_type
+                )
+                total = len(current_file_data.items)
+                self.filter_toolbar.set_info(f"Showing {visible}/{total}")
     
     @pyqtSlot()
     def _handle_undo_requested(self):
@@ -258,21 +316,20 @@ class RenForgeGUI(QMainWindow):
         current_table = self._get_current_table()
         
         if not current_file_data or not current_table:
-            self.statusBar().showMessage("No active file to undo", 3000)
             return
         
         undo_mgr = get_undo_manager()
         
         if not undo_mgr.has_undo(current_file_data.file_path):
-            self.statusBar().showMessage("No batch to undo", 3000)
+            self.statusBar().showMessage(tr("msg_nothing_to_revert"), 3000)
             return
         
         snapshot = undo_mgr.get_snapshot(current_file_data.file_path)
         row_count = snapshot.row_count() if snapshot else 0
         
         reply = QMessageBox.question(
-            self, "Confirm Undo",
-            f"Undo last batch translation?\n\nThis will revert {row_count} rows to their previous state.",
+            self, tr("confirm_undo_title"),
+            tr("confirm_undo_msg", count=row_count),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -281,33 +338,48 @@ class RenForgeGUI(QMainWindow):
             return
         
         # Perform restore
-        snapshot = undo_mgr.get_snapshot(current_file_data.file_path)
         affected_indices = list(snapshot.affected_rows.keys()) if snapshot else []
         
         if undo_mgr.restore(current_file_data.file_path, current_file_data.items):
-            # Update only affected rows instead of repopulating entire table
+            # Update only affected rows and sync file lines (Data Consistency)
+            current_lines = current_file_data.lines
+            
             for row_idx in affected_indices:
                 if 0 <= row_idx < len(current_file_data.items):
                     item = current_file_data.items[row_idx]
-                    # Update text in translation column (column 4)
+                    
+                    # 1. Update Table UI
                     table_manager.update_table_item_text(
                         self, current_table, row_idx, 4, item.current_text or ""
                     )
-                    # Update row style (modified status, markers)
                     table_manager.update_table_row_style(current_table, row_idx, item)
-                    # Update batch marker column (column 7)
                     table_manager.update_row_batch_marker(
                         current_table, row_idx, 
                         item.batch_marker, item.batch_tooltip
                     )
+                    
+                    # 2. Sync File Lines (Critical Fix)
+                    if current_file_data.mode == "translate" and item.line_index is not None:
+                        if 0 <= item.line_index < len(current_lines):
+                            new_line = parser.format_line_from_components(item, item.current_text)
+                            if new_line is not None:
+                                current_lines[item.line_index] = new_line
+                            else:
+                                logger.warning(f"Could not format line {item.line_index} during undo")
             
-            self._set_current_tab_modified(True)
-            self.statusBar().showMessage(f"Reverted {row_count} rows", 4000)
+            # 3. Recompute Tab Modified State correctly
+            any_text_modified = any(item.is_modified_session for item in current_file_data.items)
+            breakpoint_modified = getattr(current_file_data, 'breakpoint_modified', False)
+            
+            tab_modified = any_text_modified or breakpoint_modified
+            self._set_current_tab_modified(tab_modified)
+            
+            self.statusBar().showMessage(tr("msg_reverted_n_rows", count=row_count), 4000)
             
             # Update undo button state
             self.batch_summary_panel.set_undo_available(False)
         else:
-            self.statusBar().showMessage("Undo failed", 4000)
+            self.statusBar().showMessage(tr("undo_failed"), 4000)
 
     def _perform_initial_checks(self):
 
@@ -341,6 +413,10 @@ class RenForgeGUI(QMainWindow):
     def _populate_project_tree(self, project_path):
         """Delegate to ProjectController."""
         self.project_controller.populate_project_tree(project_path)
+        
+        # Stage 11: Init TM
+        from core.tm_store import init_tm_manager
+        init_tm_manager(project_path)
 
     def _handle_tree_item_activated(self, index):
         """Delegate to ProjectController."""
@@ -348,11 +424,13 @@ class RenForgeGUI(QMainWindow):
 
     def _handle_activity_bar_toggle(self, checked):
         """Delegate to ProjectController."""
-        self.project_controller.handle_activity_bar_toggle(checked)
+        if self.project_controller:
+            self.project_controller.handle_activity_bar_toggle(checked)
 
     def _set_left_panel_visibility(self, visible):
         """Delegate to ProjectController."""
-        self.project_controller.set_left_panel_visibility(visible)
+        if self.project_controller:
+            self.project_controller.set_left_panel_visibility(visible)
 
     def _update_language_model_display(self):
 
@@ -471,10 +549,17 @@ class RenForgeGUI(QMainWindow):
         self.source_lang_combo.blockSignals(False)
         self.model_combo.blockSignals(False)
 
-    def _get_current_table(self) -> QTableWidget | None:
-
+    def _get_current_table(self) -> QTableWidget | QTableView | None:
+        """
+        Mevcut tab'daki tablo widget'ını döndür.
+        
+        Hem eski QTableWidget hem de yeni TranslationTableView (QTableView) desteklenir.
+        """
         current_widget = self.tab_widget.currentWidget()
-        return current_widget if isinstance(current_widget, QTableWidget) else None
+        # Hem QTableWidget hem QTableView destekleniyor
+        if isinstance(current_widget, (QTableWidget, QTableView)):
+            return current_widget
+        return None
 
     def _get_current_file_data(self) -> ParsedFile | None:
 
@@ -539,6 +624,283 @@ class RenForgeGUI(QMainWindow):
                     self.tab_widget.setTabText(current_tab_index, new_tab_text)
 
             self._update_ui_state()
+            
+            # Stage 11: Update TM suggestions
+            if hasattr(self, 'tm_panel'):
+                self.tm_panel.on_selection_changed()
+
+    def _init_workspace(self):
+        """
+        Stage 14: Initialize Tabbed Workspace.
+        Creates 5 main docks and organizes them into a tabbed layout.
+        """
+        self.workspace_docks = {}
+        
+        # 1. TRANSLATION DOCK
+        self.translation_dock = QDockWidget(tr("workspace_translation"), self)
+        self.translation_dock.setObjectName("dock_translation")
+        
+        # Move SearchWidget here (it was in left panel, now in Translation Dock)
+        translation_container = QWidget()
+        trans_layout = QVBoxLayout(translation_container)
+        trans_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Instantiate SearchWidget using UIBuilder
+        # Note: UIBuilder instance is local in __init__, but we need access to the method.
+        # We can create a temporary builder or just call the method if it was static (it's not).
+        # We access it via self.ui_builder if we saved it? We didn't save it in __init__ as an attribute.
+        # We should probably save it in __init__.
+        
+        # FIX: Let's assume we can re-create UIBuilder temporarily or move logic.
+        # But UIBuilder takes main_window.
+        from gui.ui_builder import UIBuilder
+        temp_builder = UIBuilder(self)
+        self.search_replace_panel = temp_builder.build_search_panel()
+        
+        trans_layout.addWidget(self.search_replace_panel)
+            
+        self.translation_dock.setWidget(translation_container)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.translation_dock)
+        self.workspace_docks['translation'] = self.translation_dock
+
+
+        # 2. REVIEW DOCK
+        self.review_dock = QDockWidget(tr("workspace_review"), self)
+        self.review_dock.setObjectName("dock_review")
+        review_container = QWidget()
+        review_layout = QVBoxLayout(review_container)
+        review_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Batch Summary
+        self.batch_summary_panel = BatchSummaryPanel(self)
+        self.batch_summary_panel.undo_requested.connect(self._handle_undo_requested)
+        self.batch_summary_panel.open_review_requested.connect(self._handle_open_review)
+        review_layout.addWidget(self.batch_summary_panel)
+        
+        # Review Panel
+        self.review_panel = ReviewPanel(self)
+        self.review_panel.request_navigation.connect(self._navigate_to_raw_index)
+        review_layout.addWidget(self.review_panel)
+        
+        self.review_dock.setWidget(review_container)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.review_dock)
+        self.workspace_docks['review'] = self.review_dock
+
+
+        # 3. QUALITY DOCK (Tabs: QA, Preflight)
+        self.quality_dock = QDockWidget(tr("workspace_quality"), self)
+        self.quality_dock.setObjectName("dock_quality")
+        quality_tabs = QTabWidget()
+        
+        # QA Panel
+        self.qa_panel = QAPanel(self)
+        self.qa_panel.request_navigation.connect(self._navigate_to_raw_index)
+        quality_tabs.addTab(self.qa_panel, tr("qa_title"))
+        
+        # Preflight Panel
+        self.preflight_panel = PreflightPanel(self)
+        self.preflight_panel.navigate_requested.connect(self.navigate_to_file_line)
+        quality_tabs.addTab(self.preflight_panel, tr("pf_title"))
+        
+        self.quality_dock.setWidget(quality_tabs)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.quality_dock)
+        self.workspace_docks['quality'] = self.quality_dock
+
+
+        # 4. CONSISTENCY DOCK (Tabs: Glossary, TM)
+        self.consistency_dock = QDockWidget(tr("workspace_consistency"), self)
+        self.consistency_dock.setObjectName("dock_consistency")
+        consistency_tabs = QTabWidget()
+        
+        # Glossary
+        self.glossary_panel = GlossaryPanel(self)
+        consistency_tabs.addTab(self.glossary_panel, tr("glossary_title"))
+        
+        # TM
+        from core.tm_store import init_tm_manager
+        self.tm_panel = TMPanel(self)
+        consistency_tabs.addTab(self.tm_panel, tr("tm_title"))
+        
+        self.consistency_dock.setWidget(consistency_tabs)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.consistency_dock)
+        self.workspace_docks['consistency'] = self.consistency_dock
+
+
+        # 5. SETTINGS DOCK (Tabs: Plugins, General??)
+        self.settings_dock = QDockWidget(tr("workspace_settings"), self)
+        self.settings_dock.setObjectName("dock_settings")
+        settings_tabs = QTabWidget()
+        
+        # Plugins (Stage 7.1)
+        # We need a plugin settings widget. 
+        # Using PluginSettingsWidget if available, or placeholder.
+        try:
+             # Pass self.settings dict? PluginSettingsWidget expects settings_model object?
+             # Looking at widget: self.settings = settings_model then self.settings.get() calls
+             # It treats it as a dict mostly or object with get(). RenForgeGUI.settings is a dict.
+             # So passing self.settings works perfectly if it expects a dict-like.
+             # Wait, the error said "missing 1 required positional argument".
+             # So we must pass self.settings.
+             self.plugin_settings_panel = PluginSettingsWidget(self.settings)
+             settings_tabs.addTab(self.plugin_settings_panel, "Plugins")
+        except Exception as e:
+             logger.error(f"Failed to init Plugin Settings for dock: {e}")
+             settings_tabs.addTab(QLabel(f"Plugin Error: {e}"), "Plugins")
+             
+        # General Settings Placeholder (User uses dialog normally, but maybe quick settings here?)
+        settings_tabs.addTab(QLabel("See File > Settings for more."), "General")
+             
+        self.settings_dock.setWidget(settings_tabs)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.settings_dock)
+        self.workspace_docks['settings'] = self.settings_dock
+        
+        
+        # TABIFY ALL DOCKS in specific order
+        # We want: [Translation] [Review] [Quality] [Consistency] [Settings]
+        # tabifyDockWidget(first, second) puts second on top of first.
+        # Sequence:
+        self.tabifyDockWidget(self.translation_dock, self.review_dock)
+        self.tabifyDockWidget(self.review_dock, self.quality_dock)
+        self.tabifyDockWidget(self.quality_dock, self.consistency_dock)
+        self.tabifyDockWidget(self.consistency_dock, self.settings_dock)
+        
+        # Raise Translation by default
+        self.translation_dock.raise_()
+        
+        # Helper aliases for legacy compatibility (tests/existing code might check self.qa_dock)
+        self.qa_dock = self.quality_dock
+        self.preflight_dock = self.quality_dock
+        self.tm_dock = self.consistency_dock
+        self.glossary_dock = self.consistency_dock
+        
+        # Restore dock layout state (if saved)
+        self._restore_workspace_state()
+
+    def _restore_workspace_state(self):
+        """Restore dock layout and visibility from settings."""
+        state_hex = self.settings.get("window_state")
+        if state_hex:
+            try:
+                from PyQt6.QtCore import QByteArray
+                state = QByteArray.fromHex(str(state_hex).encode())
+                self.restoreState(state)
+                logger.debug("Workspace state restored from settings.")
+            except Exception as e:
+                logger.warning(f"Failed to restore workspace state: {e}")
+        else:
+             logger.debug("No workspace state saved used defaults.")
+
+    def _navigate_to_raw_index(self, raw_index: int):
+        current_table = self._get_current_table()
+        if not current_table: return
+        
+        # QTableView/QTableWidget uyumlu row_count
+        model = current_table.model() if hasattr(current_table, 'model') else None
+        if model:
+            row_count = model.rowCount()
+        elif hasattr(current_table, 'rowCount'):
+            row_count = current_table.rowCount()
+        else:
+            return
+        
+        found_row = -1
+        for r in range(row_count):
+            # QTableView için model.data(), QTableWidget için item().data()
+            if model:
+                idx = model.index(r, 0)
+                item_data_idx = model.data(idx, Qt.ItemDataRole.UserRole)
+            elif hasattr(current_table, 'item'):
+                item = current_table.item(r, 0)
+                item_data_idx = item.data(Qt.ItemDataRole.UserRole) if item else None
+            else:
+                continue
+                
+            if item_data_idx == raw_index:
+                found_row = r
+                break
+                
+        if found_row != -1:
+            current_table.selectRow(found_row)
+            # QTableView için scrollTo(), QTableWidget için scrollToItem()
+            if hasattr(current_table, 'scrollTo') and model:
+                from PyQt6.QtWidgets import QAbstractItemView
+                current_table.scrollTo(model.index(found_row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
+            elif hasattr(current_table, 'scrollToItem') and hasattr(current_table, 'item'):
+                from PyQt6.QtWidgets import QAbstractItemView
+                current_table.scrollToItem(current_table.item(found_row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
+        else:
+            self.statusBar().showMessage("QA: Item not visible in current view.", 3000)
+
+    def navigate_to_file_line(self, file_path: str, line_num: int):
+        """Open file and scroll to line."""
+        # 1. Open file using AppController
+        if hasattr(self, '_app_controller') and self._app_controller:
+            self._app_controller.open_file(file_path, mode="translate")
+        else:
+            logger.error("Cannot navigate: AppController not initialized")
+            return
+        
+        # 2. Find the tab for this file
+        # We process events to ensure UI updates if file open was async/queued
+        QApplication.instance().processEvents()
+        
+        found_tab = False
+        for i in range(self.tab_widget.count()):
+            tab = self.tab_widget.widget(i)
+            # Check tab.file_path (FileTableView has this property)
+            if hasattr(tab, 'file_path') and os.path.normpath(tab.file_path) == os.path.normpath(file_path):
+                self.tab_widget.setCurrentIndex(i)
+                found_tab = True
+                
+                # Scroll to line
+                if hasattr(tab, 'scroll_to_line'):
+                     tab.scroll_to_line(line_num)
+                break
+                
+        if not found_tab:
+            logger.warning(f"Tab not found for {file_path} after open attempt.")
+
+
+    def _handle_open_review(self):
+        """Show and refresh the review panel/dock."""
+        if not self.review_dock:
+            return
+            
+        self.review_dock.show()
+        self.review_dock.raise_()
+        self.review_panel.refresh_changes()
+        
+    def _handle_export_pack(self):
+        """Show Export Pack dialog."""
+        
+        # Stage 13: Preflight Recommendation
+        if hasattr(self, 'preflight_panel'):
+            # Check if recently run or just prompt
+            # For now, always prompt if block_on_error (or user not disabled check)
+            
+            # Simple prompt
+            reply = QMessageBox.question(self, tr("pf_export_prompt_title"), tr("pf_export_prompt_msg"),
+                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                                       
+            if reply == QMessageBox.StandardButton.Yes:
+                self.preflight_dock.show()
+                self.preflight_dock.raise_()
+                self.preflight_panel.start_scan()
+                return # Stop export to let user see results
+                
+            # If user said No, proceed. 
+            # Ideally we check if previous run had Critical errors? 
+            # But "No" implies "I check myself or I don't care".
+            
+        from gui.dialogs.pack_dialogs import ExportDialog
+        dialog = ExportDialog(self)
+        dialog.exec()
+        
+    def _handle_import_pack(self):
+        """Show Import Pack dialog."""
+        from gui.dialogs.pack_dialogs import ImportDialog
+        dialog = ImportDialog(self)
+        dialog.exec()
 
     def _update_ui_state(self):
 
@@ -547,12 +909,10 @@ class RenForgeGUI(QMainWindow):
         current_items = self._get_current_translatable_items()
         current_item_idx = self._get_current_item_index()
 
-        is_online = ai.is_internet_available() 
-        if not is_online:
-
-             current_message = self.statusBar().currentMessage()
-             if "Error" not in current_message and "available" not in current_message: 
-                  self.statusBar().showMessage(tr("close_no_internet"), 3000)
+        # PERFORMANCE FIX: Don't check internet in update_ui_state loop!
+        # It blocks the UI. We check on action execution.
+        # is_online = ai.is_internet_available() 
+        pass
 
         has_open_tabs = self.tab_widget.count() > 0
         self.file_is_loaded = has_open_tabs
@@ -578,11 +938,8 @@ class RenForgeGUI(QMainWindow):
 
             if not project_is_open and self.project_view_button.isChecked():
                  self.project_view_button.setChecked(False)
-        if self.search_view_button:
-             self.search_view_button.setEnabled(has_open_tabs) 
-
-             if not has_open_tabs and self.search_view_button.isChecked():
-                  self.search_view_button.setChecked(False)
+                 
+        # Removed search_view_button logic (moved to Translation Dock)
 
         if current_table:
              current_table.setEnabled(tab_has_items)
@@ -593,17 +950,29 @@ class RenForgeGUI(QMainWindow):
             selected_rows = sorted(list(set(index.row() for index in selected_indices)))
 
         has_selection = len(selected_rows) > 0
-        single_item_selected = has_selection and current_item_idx >= 0 and tab_has_items 
+        single_item_selected = has_selection and current_item_idx >= 0 and tab_has_items
+        
+        # Debug log: Selection durumu
+        logger.debug(f"[_update_ui_state] Selection: selectedRows={len(selected_rows)}, current_item_idx={current_item_idx}, has_selection={has_selection}, single_selected={single_item_selected}") 
 
         can_revert_selected = False
         if has_selection and current_items:
+            # Check if any selected row has text modifications
             can_revert_selected = any(
-                0 <= row_idx < len(current_items) and current_items[row_idx].get('is_modified_session', False)
+                0 <= row_idx < len(current_items) and current_items[row_idx].is_modified_session
                 for row_idx in selected_rows
             )
 
-        self.revert_btn.setEnabled(can_revert_selected)
-        self.revert_all_btn.setEnabled(tab_is_modified)
+        if hasattr(self, 'revert_btn'):
+            self.revert_btn.setEnabled(can_revert_selected)
+        
+        can_revert_all = False
+        if current_items:
+            # Check if ANY item has text modifications (ignore breakpoints for Revert All)
+            can_revert_all = any(item.is_modified_session for item in current_items)
+            
+        if hasattr(self, 'revert_all_btn'):
+            self.revert_all_btn.setEnabled(can_revert_all)
 
         can_revert_current_single = False
         if single_item_selected and current_items and 0 <= current_item_idx < len(current_items):
@@ -628,15 +997,22 @@ class RenForgeGUI(QMainWindow):
         ai_available = not ai.no_ai 
         logger.debug(f"[_update_ui_state] AI available check: ai.no_ai = {ai.no_ai} -> ai_available = {ai_available}") 
         can_use_ai_edit = single_item_selected and ai_available
+        can_use_batch_ai = has_selection and ai_available  # Batch AI için selection yeterli
         self.ai_edit_btn.setEnabled(can_use_ai_edit)
         self.ai_edit_action_menu.setEnabled(can_use_ai_edit)
-        logger.debug(f"[_update_ui_state] AI buttons enabled: {can_use_ai_edit} (single_selected={single_item_selected}, ai_available={ai_available})") 
+        
+        # Batch AI butonu
+        if hasattr(self, 'batch_ai_btn'):
+            self.batch_ai_btn.setEnabled(can_use_batch_ai)
+        
+        logger.debug(f"[_update_ui_state] AI buttons enabled: single={can_use_ai_edit}, batch={can_use_batch_ai} (single_selected={single_item_selected}, has_selection={has_selection}, ai_available={ai_available})") 
 
         _translator_module = ai._lazy_import_translator() 
         translator_library_ok = _translator_module is not None
-        is_online = ai.is_internet_available() 
-        translator_available = translator_library_ok and is_online
-        logger.debug(f"[_update_ui_state] GTranslate check: library_ok={translator_library_ok}, is_online={is_online} -> translator_available={translator_available}") 
+        # PERFORMANCE FIX: Don't check internet here. Assume online for UI state.
+        # Check happens on click.
+        translator_available = translator_library_ok 
+        logger.debug(f"[_update_ui_state] GTranslate check: library_ok={translator_library_ok} -> translator_available={translator_available}") 
         can_use_gtranslate = single_item_selected and translator_available
         can_use_batch_gtranslate = has_selection and translator_available
         self.gt_translate_btn.setEnabled(can_use_gtranslate)
@@ -725,17 +1101,26 @@ class RenForgeGUI(QMainWindow):
             user_decision = "no_changes"
 
         if should_exit:
+            # FIX: Load fresh settings to avoid overwriting changes made by other components (e.g., Glossary)
+            current_settings = load_settings()
+            
             is_max = self.isMaximized()
             geo = self.geometry()
-            self.settings["window_maximized"] = is_max
-
+            
+            current_settings["window_maximized"] = is_max
             if not is_max:
-                self.settings["window_size_w"] = geo.width()
-                self.settings["window_size_h"] = geo.height()
+                current_settings["window_size_w"] = geo.width()
+                current_settings["window_size_h"] = geo.height()
+            
+            # Stage 14.5: Save Window State (Docks/Toolbar layout)
+            try:
+                state = self.saveState()
+                current_settings["window_state"] = state.toHex().data().decode()
+            except Exception as e:
+                 logger.warning(f"Failed to serialize window state: {e}")
 
-            if not save_settings(self.settings): 
+            if not save_settings(current_settings): 
                  logger.warning("Could not save settings (including window geometry) on exit.")
-
             else:
                  logger.debug("Window geometry saved.")
 

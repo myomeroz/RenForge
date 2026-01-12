@@ -33,6 +33,7 @@ class FilterToolbar(QWidget):
     FILTER_AI_FAIL = "ai_fail"
     FILTER_AI_WARN = "ai_warn"
     FILTER_CHANGED = "changed"
+    FILTER_EMPTY = "empty"
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,20 +43,21 @@ class FilterToolbar(QWidget):
         layout.setSpacing(6)
         
         # Label
-        label = QLabel("Filter:")
+        label = QLabel(tr("filter_label"))
         layout.addWidget(label)
         
         # Filter combo
         self.filter_combo = QComboBox()
-        self.filter_combo.addItem("All Rows", self.FILTER_ALL)
-        self.filter_combo.addItem("🔴 AI_FAIL", self.FILTER_AI_FAIL)
-        self.filter_combo.addItem("⚠️ AI_WARN", self.FILTER_AI_WARN)
-        self.filter_combo.addItem("✏️ Changed", self.FILTER_CHANGED)
+        self.filter_combo.addItem(tr("filter_all"), self.FILTER_ALL)
+        self.filter_combo.addItem(tr("filter_ai_fail"), self.FILTER_AI_FAIL)
+        self.filter_combo.addItem(tr("filter_ai_warn"), self.FILTER_AI_WARN)
+        self.filter_combo.addItem(tr("filter_changed"), self.FILTER_CHANGED)
+        self.filter_combo.addItem(tr("filter_empty"), self.FILTER_EMPTY)
         self.filter_combo.currentIndexChanged.connect(self._on_filter_changed)
         layout.addWidget(self.filter_combo)
         
         # Clear button
-        self.clear_btn = QPushButton("Clear Filter")
+        self.clear_btn = QPushButton(tr("filter_clear"))
         self.clear_btn.clicked.connect(self._clear_filter)
         self.clear_btn.setEnabled(False)
         layout.addWidget(self.clear_btn)

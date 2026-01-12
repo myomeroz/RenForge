@@ -20,6 +20,7 @@ import renforge_core as core
 import parser.core as parser
 from models.parsed_file import ParsedFile, ParsedItem
 from renforge_enums import ItemType
+from locales import tr
 
 def create_table_widget(main_window):
 
@@ -80,7 +81,10 @@ def populate_table(table_widget: QTableWidget, items_list: list, mode: str):
         modified_status = "*" if item.is_modified_session else ""
         breakpoint_status = "B" if item.has_breakpoint else ""
 
+        breakpoint_status = "B" if item.has_breakpoint else ""
+
         item_line = QTableWidgetItem(line_num_str)
+        item_line.setData(Qt.ItemDataRole.UserRole, i) # Store source index for stability
         item_type_cell = QTableWidgetItem(item_type_display) 
         item_tag_cell = QTableWidgetItem(display_tag)        
         item_original = QTableWidgetItem(original_text)
@@ -223,6 +227,20 @@ def handle_item_changed(main_window, item: QTableWidgetItem):
          item_data.initial_text = current_text_in_data
 
     if new_text != current_text_in_data:
+        
+        # Stage 10: Manual Edit Logging
+        from core.change_log import get_change_log, ChangeRecord, ChangeSource
+        import time
+        rec = ChangeRecord(
+            timestamp=time.time(),
+            file_path=current_file_data.file_path,
+            item_index=row, # Note: using row as item_index (assuming strict mapping? populate_table uses i. OK.)
+            display_row=item_data.line_index + 1 if item_data.line_index is not None else row + 1,
+            before_text=current_text_in_data or "",
+            after_text=new_text,
+            source=ChangeSource.MANUAL
+        )
+        get_change_log().add_record(rec)
 
         item_data.current_text = new_text
         item_data.is_modified_session = True
@@ -420,11 +438,24 @@ def revert_selected_items(main_window):
         main_window.statusBar().showMessage("No selected items to revert.", 3000)
         return
 
-    selected_rows = sorted(list(set(index.row() for index in selected_indices)))
+    processed_rows = set()
+    # selected_rows logic replaced by iteration over indices with UserRole check
+    # selected_rows = sorted(list(set(index.row() for index in selected_indices)))
     reverted_count = 0
 
-    for row_index in selected_rows:
-        if revert_single_item_logic(main_window, row_index):
+    for index in selected_indices:
+        # Robust retrieval using UserRole (stable identity)
+        source_index = index.data(Qt.ItemDataRole.UserRole)
+        # Fallback to row() if UserRole not found (though it should be there)
+        if source_index is None:
+             source_index = index.row()
+
+        # Deduplicate if multiple columns selected for same row
+        if source_index in processed_rows:
+            continue
+        processed_rows.add(source_index)
+
+        if revert_single_item_logic(main_window, source_index):
             reverted_count += 1
 
     if reverted_count > 0:
@@ -444,7 +475,7 @@ def revert_all_items(main_window):
     current_table = main_window._get_current_table() 
 
     if not current_file_data or not current_table:
-        main_window.statusBar().showMessage("Нет активной вкладки для отмены.", 3000)
+        main_window.statusBar().showMessage(tr("no_active_tab_revert"), 3000)
         return
 
     current_items = current_file_data.items
@@ -453,13 +484,12 @@ def revert_all_items(main_window):
     modified_indices = [i for i, item in enumerate(current_items) if item.is_modified_session]
 
     if not modified_indices:
-        main_window.statusBar().showMessage("No text changes to revert.", 3000)
+        main_window.statusBar().showMessage(tr("msg_nothing_to_revert"), 3000)
         return
 
     file_name = os.path.basename(current_file_data.output_path or main_window.current_file_path or "?")
-    reply = QMessageBox.question(main_window, "Confirm Revert",
-                                 f"Revert all {len(modified_indices)} text changes in file {file_name}?\n"
-                                 "(Marker changes will remain)",
+    reply = QMessageBox.question(main_window, tr("btn_revert_all"),
+                                 tr("confirm_revert_all_msg", count=len(modified_indices), file=file_name),
                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                  QMessageBox.StandardButton.No)
 
@@ -470,13 +500,13 @@ def revert_all_items(main_window):
                 reverted_count += 1
 
         if reverted_count > 0:
-            main_window.statusBar().showMessage(f"All {reverted_count} text changes reverted.", 4000)
+            main_window.statusBar().showMessage(tr("all_changes_reverted", count=reverted_count), 4000)
 
-            breakpoint_modified = current_file_data.breakpoint_modified
+            breakpoint_modified = getattr(current_file_data, 'breakpoint_modified', False)
             main_window._set_current_tab_modified(breakpoint_modified)
         else:
 
-            main_window.statusBar().showMessage("Failed to revert changes (internal error?).", 5000)
+            main_window.statusBar().showMessage(tr("revert_failed_internal"), 5000)
 
 
 def update_row_batch_marker(table_widget: QTableWidget, row_index: int, 
@@ -543,6 +573,11 @@ def filter_table_rows(table_widget: QTableWidget, items_list: list, filter_type:
             should_show = (batch_marker == "AI_WARN")
         elif filter_type == "changed":
             should_show = item.is_modified_session
+        elif filter_type == "empty":
+             # Empty or Untranslated
+             current_txt = item.current_text or ""
+             original_txt = item.original_text or ""
+             should_show = (not current_txt.strip()) or (current_txt == original_txt)
         # else filter_type == "all" -> show all
         
         table_widget.setRowHidden(i, not should_show)

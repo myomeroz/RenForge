@@ -33,7 +33,21 @@ DEFAULT_USE_DETECTED_TARGET_LANG = True
 BATCH_TRANSLATE_DELAY = 0.01
 ALLOW_EMPTY_STRINGS = True
 
-SETTINGS_DIR = Path.home() / ".renforge" 
+if getattr(sys, 'frozen', False):
+    APP_DIR = Path(os.path.dirname(sys.executable))
+else:
+    APP_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
+
+SETTINGS_DIR = APP_DIR / "settings"
+DB_DIR = APP_DIR / "DB"
+
+# Ensure directories exist
+try:
+    SETTINGS_DIR.mkdir(exist_ok=True)
+    DB_DIR.mkdir(exist_ok=True)
+except Exception:
+    pass
+
 SETTINGS_FILE_PATH = SETTINGS_DIR / "settings.json"
 
 DEFAULT_AUTO_PREPARE_PROJECT = True 

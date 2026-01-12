@@ -22,16 +22,24 @@ _loaded_api_key = None
 _available_models_cache = None 
 no_ai = False 
 
-def is_internet_available(host="8.8.8.8", port=53, timeout=1):
-
-    try:
-        socket.setdefaulttimeout(timeout)
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
-        logger.debug("[is_internet_available] Check successful.")
-        return True
-    except socket.error as ex:
-        logger.debug(f"[is_internet_available] Check failed: {ex}")
-        return False
+def is_internet_available(host="8.8.8.8", port=53, timeout=3):
+    """
+    Check for internet connectivity by trying to connect to Google DNS or Cloudflare DNS.
+    """
+    hosts = [("8.8.8.8", 53), ("1.1.1.1", 53), ("www.google.com", 80)]
+    
+    for h, p in hosts:
+        try:
+            socket.setdefaulttimeout(timeout)
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((h, p))
+            logger.debug(f"[is_internet_available] Check successful (connected to {h}).")
+            return True
+        except socket.error as ex:
+            logger.debug(f"[is_internet_available] Connection to {h} failed: {ex}")
+            continue
+            
+    logger.warning("[is_internet_available] All connectivity checks failed.")
+    return False
 
 def _lazy_import_genai():
 
@@ -100,86 +108,7 @@ def _lazy_import_translator():
 # BATCH TRANSLATION UTILITIES - Token Masking and Validation
 # =============================================================================
 
-# Patterns to protect during translation (Ren'Py tags, placeholders, formatting)
-RENPY_TOKEN_PATTERNS = [
-    r'\{i\}', r'\{/i\}',           # Italic tags
-    r'\{b\}', r'\{/b\}',           # Bold tags  
-    r'\{u\}', r'\{/u\}',           # Underline tags
-    r'\{s\}', r'\{/s\}',           # Strikethrough tags
-    r'\{color=[^}]+\}', r'\{/color\}',  # Color tags
-    r'\{size=[^}]+\}', r'\{/size\}',    # Size tags
-    r'\{font=[^}]+\}', r'\{/font\}',    # Font tags
-    r'\{w(?:=[\d.]+)?\}',          # Wait tags {w} {w=0.5}
-    r'\{p(?:=[\d.]+)?\}',          # Pause tags {p} {p=1.0}
-    r'\{nw\}',                     # No-wait tag
-    r'\{fast\}',                   # Fast display
-    r'\{cps=\d+\}', r'\{/cps\}',   # Characters per second
-    r'\[[^\]]+\]',                 # Variable placeholders [name] [player]
-    r'%\([^)]+\)[sd]',             # Python format %(name)s %(count)d
-    r'%[sd]',                      # Simple Python format %s %d
-    r'\{\d+\}',                    # Positional format {0} {1}
-]
-
-# Compiled pattern for efficiency
-_TOKEN_REGEX = None
-
-def _get_token_regex():
-    """Get compiled regex for all token patterns."""
-    global _TOKEN_REGEX
-    if _TOKEN_REGEX is None:
-        combined = '|'.join(f'({p})' for p in RENPY_TOKEN_PATTERNS)
-        _TOKEN_REGEX = re.compile(combined)
-    return _TOKEN_REGEX
-
-
-def mask_renpy_tokens(text: str) -> tuple:
-    """
-    Replace Ren'Py tokens with masked placeholders ⟦T0⟧, ⟦T1⟧, etc.
-    
-    Args:
-        text: Original text with Ren'Py tokens
-        
-    Returns:
-        Tuple of (masked_text, token_map) where token_map is {placeholder: original}
-    """
-    if not text:
-        return text, {}
-    
-    token_map = {}
-    counter = [0]  # Use list for closure mutability
-    
-    def replacer(match):
-        token = match.group(0)
-        placeholder = f"⟦T{counter[0]}⟧"
-        token_map[placeholder] = token
-        counter[0] += 1
-        return placeholder
-    
-    regex = _get_token_regex()
-    masked_text = regex.sub(replacer, text)
-    
-    return masked_text, token_map
-
-
-def unmask_renpy_tokens(text: str, token_map: dict) -> str:
-    """
-    Restore masked placeholders ⟦T0⟧ back to original Ren'Py tokens.
-    
-    Args:
-        text: Text with masked placeholders
-        token_map: Map of {placeholder: original_token}
-        
-    Returns:
-        Text with original tokens restored
-    """
-    if not text or not token_map:
-        return text
-    
-    result = text
-    for placeholder, original in token_map.items():
-        result = result.replace(placeholder, original)
-    
-    return result
+from core.text_utils import mask_renpy_tokens, unmask_renpy_tokens, _get_token_regex
 
 
 def validate_tokens_preserved(original: str, translated: str, token_map: dict) -> list:
@@ -507,6 +436,14 @@ def _translate_chunk(chunk: list, source_lang: str, target_lang: str, glossary: 
         "stats": {"success": 0, "failed": 0, "fallback": 0, "retried": 0}
     }
     
+    # Initialize GlossaryManager ONCE per chunk (not per item) to avoid disk I/O per item
+    glossary_manager = None
+    try:
+        from core.glossary_manager import GlossaryManager
+        glossary_manager = GlossaryManager()
+    except Exception as gm_init_err:
+        logger.warning(f"[translate_chunk] Could not initialize GlossaryManager: {gm_init_err}")
+    
     # Build source language instruction
     source_instruction = f"from {source_lang}" if source_lang.lower() != "auto" else "(auto-detect source language)"
     
@@ -675,6 +612,13 @@ Your failed response started with: {last_response[:200] if last_response else 'N
                     # Accept anyway but log warning (don't count as fallback)
                     logger.warning(f"[translate_chunk] i={idx} has leading dash not in original (accepted with warning)")
         
+        # Stage 6: Apply Glossary Enforcement (use pre-initialized manager)
+        if final_translation and glossary_manager:
+            try:
+                final_translation = glossary_manager.apply_to_text(final_translation)
+            except Exception as gle:
+                logger.error(f"[translate_chunk] Glossary application failed: {gle}")
+
         result["translations"].append({"i": idx, "t": final_translation})
         result["stats"]["success"] += 1
     
@@ -1046,11 +990,11 @@ def load_api_key():
 
 def save_api_key(api_key):
 
-    settings = set.load_settings() 
+    settings = rf_settings.load_settings() 
 
     if not isinstance(settings, dict):
          settings = {}
-         logger.warning("set.load_settings did not return dict in save_api_key. Starting fresh.")
+         logger.warning("rf_settings.load_settings did not return dict in save_api_key. Starting fresh.")
 
     action_taken = "unchanged" 
     current_api_key = settings.get("api_key")
@@ -1077,7 +1021,7 @@ def save_api_key(api_key):
     if action_taken in ["saved", "removed"]:
         logger.debug(f"Attempting to save settings...")
 
-        if set.save_settings(settings): 
+        if rf_settings.save_settings(settings): 
             if action_taken == "saved":
                 logger.info(f"API key saved/updated successfully.")
             elif action_taken == "removed":
@@ -1468,7 +1412,7 @@ def refine_text_with_gemini(original_text, current_text, user_instruction, conte
             if response.parts:
                 refined_text = response.text.strip()
 
-                if refined_text.startswith(''):
+                if refined_text.startswith('```') and refined_text.endswith('```'):
                     refined_text = refined_text[3:-3].strip()
                 elif refined_text.startswith('"') and refined_text.endswith('"'):
                     refined_text = refined_text[1:-1].strip()
@@ -1481,6 +1425,15 @@ def refine_text_with_gemini(original_text, current_text, user_instruction, conte
 
                 if original_vars != refined_vars:
                      logger.warning(f"Variable set [...] might have changed! Original: {original_vars}, Refined: {refined_vars}")
+
+                # Stage 6: Apply Glossary Enforcement
+                try:
+                    from core.glossary_manager import GlossaryManager
+                    glossary_manager = GlossaryManager() # Lightweight, loads from dict
+                    refined_text = glossary_manager.apply_to_text(refined_text)
+                    logger.debug("Glossary applied to refined text.")
+                except Exception as gl_err:
+                    logger.error(f"Failed to apply glossary: {gl_err}")
 
                 return (refined_text, None) 
             else:

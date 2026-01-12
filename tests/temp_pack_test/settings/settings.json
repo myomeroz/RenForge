@@ -1,0 +1,32 @@
+{
+    "api_key": null,
+    "mode_selection_method": null,
+    "default_target_language": "tr",
+    "default_source_language": "en",
+    "default_selected_model": "gemini-2.0-flash",
+    "use_detected_target_lang": true,
+    "auto_prepare_project": true,
+    "ui_language": "en",
+    "window_size_w": 1200,
+    "window_size_h": 800,
+    "window_maximized": false,
+    "plugins": {
+        "test_plugin": {
+            "enabled": true,
+            "api_key": "SECRET_KEY_123"
+        }
+    },
+    "glossary_terms": [
+        {
+            "source": "Hello",
+            "target": "Bonjour",
+            "mode": "exact",
+            "enabled": true
+        },
+        {
+            "source": "External",
+            "target": "Dis",
+            "mode": "exact"
+        }
+    ]
+}

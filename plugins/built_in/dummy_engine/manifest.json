@@ -1,0 +1,17 @@
+{
+    "id": "renforge.engine.dummy",
+    "name": "Dummy Engine (Test)",
+    "version": "1.1.0",
+    "api_version": 1,
+    "type": "engine",
+    "entrypoint": "plugin.py:DummyEngine",
+    "description": "A dummy engine for testing plugin infrastructure.",
+    "settings_schema": [
+        {
+            "key": "prefix",
+            "label": "Prefix",
+            "type": "text",
+            "default": "[TEST] "
+        }
+    ]
+}

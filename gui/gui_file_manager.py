@@ -314,7 +314,18 @@ def save_changes(main_window):
                 item.initial_text = item.current_text
 
             if current_table:
-                    table_manager.update_all_row_styles(current_table, current_items_list) 
+                    # TranslationTableView için model zaten stili yönetiyor
+                    # Sadece modeli güncellememiz gerekiyor
+                    from gui.views.translation_table_view import TranslationTableView
+                    from PyQt6.QtWidgets import QTableWidget
+                    
+                    if isinstance(current_table, TranslationTableView):
+                        # Yeni Model-View: Model'e is_modified değişikliklerini bildir
+                        from gui.views import file_table_view
+                        file_table_view.sync_parsed_file_to_view(current_table, current_data)
+                    elif isinstance(current_table, QTableWidget):
+                        # Eski QTableWidget
+                        table_manager.update_all_row_styles(current_table, current_items_list) 
 
             main_window._set_current_tab_modified(False) 
 

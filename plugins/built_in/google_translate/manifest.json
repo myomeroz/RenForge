@@ -1,0 +1,10 @@
+{
+    "id": "renforge.engine.google_free",
+    "name": "Google Translate (Free)",
+    "version": "1.0.1",
+    "api_version": 1,
+    "type": "engine",
+    "entrypoint": "plugin.py:GoogleTranslatePlugin",
+    "description": "Uses deep-translator (Google Free API). Rate limited.",
+    "settings_schema": []
+}

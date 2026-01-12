@@ -123,54 +123,18 @@ class ProjectController:
     
     def handle_activity_bar_toggle(self, checked: bool):
         """
-        Handle toggle of activity bar buttons (project/search).
+        Handle toggle of activity bar buttons (project view only).
         
         Args:
             checked: Whether the button is now checked
         """
         sender_button = self.main.sender()
-        buttons = [self.main.project_view_button, self.main.search_view_button]
         
         logger.debug(f"Activity Bar Toggle: Button '{sender_button.objectName()}' -> Checked: {checked}")
         
-        panel_to_show = None
-        target_panel_visible = False
-        
-        if checked:
-            # Uncheck other buttons
-            for button in buttons:
-                if button is not sender_button and button.isChecked():
-                    button.blockSignals(True)
-                    button.setChecked(False)
-                    button.blockSignals(False)
-            
-            # Determine which panel to show
-            if sender_button is self.main.project_view_button:
-                panel_to_show = self.main.project_panel
-                logger.debug("  -> Project panel requested (showing)")
-            elif sender_button is self.main.search_view_button:
-                panel_to_show = self.main.search_replace_panel
-                logger.debug("  -> Search panel requested (showing)")
-            
-            if panel_to_show:
-                self.main.left_panel_layout.setCurrentWidget(panel_to_show)
-                target_panel_visible = True
-        else:
-            logger.debug(f"  -> Button '{sender_button.objectName()}' unchecked. Hiding panel.")
-            target_panel_visible = False
-        
-        self.set_left_panel_visibility(target_panel_visible)
-        
-        # Sync menu checkable actions
-        if hasattr(self.main, 'toggle_project_panel_action'):
-            is_proj_checked = self.main.project_view_button.isChecked()
-            if self.main.toggle_project_panel_action.isChecked() != is_proj_checked:
-                self.main.toggle_project_panel_action.setChecked(is_proj_checked)
-        
-        if hasattr(self.main, 'toggle_search_panel_action'):
-            is_search_checked = self.main.search_view_button.isChecked()
-            if self.main.toggle_search_panel_action.isChecked() != is_search_checked:
-                self.main.toggle_search_panel_action.setChecked(is_search_checked)
+        # Only Project View remains in Activity Bar
+        if sender_button is self.main.project_view_button:
+            self.set_left_panel_visibility(checked)
         
         self.main._update_ui_state()
     

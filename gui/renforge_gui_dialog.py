@@ -8,7 +8,7 @@ try:
     from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
                               QLineEdit, QMessageBox, QDialogButtonBox, QGroupBox,
                               QRadioButton, QGridLayout, QApplication, QSizePolicy, QSplitter,
-                              QComboBox, QCheckBox) 
+                              QComboBox, QCheckBox, QTabWidget, QWidget, QScrollArea, QFormLayout) 
     from PyQt6.QtCore import Qt, QTimer
     from PyQt6.QtGui import QFont
 except ImportError:
@@ -699,9 +699,19 @@ class SettingsDialog(QDialog):
 
         self.models = _available_models_cache if _available_models_cache is not None else []
 
+        from gui.widgets.plugin_settings_widget import PluginSettingsWidget
+
         display_mode = self.current_mode_method if self.current_mode_method else "auto"
 
         layout = QVBoxLayout(self)
+        
+        # Tabs
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+        
+        # --- GENERAL TAB ---
+        general_tab = QWidget()
+        general_layout = QVBoxLayout(general_tab)
 
         mode_group = QGroupBox(tr("settings_mode_selection"))
         mode_layout = QVBoxLayout(mode_group)
@@ -718,7 +728,7 @@ class SettingsDialog(QDialog):
 
         mode_layout.addWidget(self.auto_mode_radio)
         mode_layout.addWidget(self.manual_mode_radio)
-        layout.addWidget(mode_group)
+        general_layout.addWidget(mode_group)
 
         lang_group = QGroupBox(tr("settings_language"))
         lang_layout = QVBoxLayout(lang_group)
@@ -729,7 +739,7 @@ class SettingsDialog(QDialog):
                                                     "overriding the default language.")
         self.use_detected_lang_checkbox.setChecked(self.current_use_detected_lang)
         lang_layout.addWidget(self.use_detected_lang_checkbox)
-        layout.addWidget(lang_group)
+        general_layout.addWidget(lang_group)
 
         prepare_group = QGroupBox(tr("settings_project"))
         prepare_layout = QVBoxLayout(prepare_group)
@@ -739,7 +749,7 @@ class SettingsDialog(QDialog):
                                              "decompiling *.rpyc files (requires unrpa and unrpyc).")
         self.auto_prepare_checkbox.setChecked(self.current_auto_prepare_project)
         prepare_layout.addWidget(self.auto_prepare_checkbox)
-        layout.addWidget(prepare_group)
+        general_layout.addWidget(prepare_group)
 
         defaults_group = QGroupBox(tr("settings_defaults"))
         defaults_layout = QGridLayout(defaults_group)
@@ -790,7 +800,7 @@ class SettingsDialog(QDialog):
         else:
             self._populate_model_combo()
 
-        layout.addWidget(defaults_group)
+        general_layout.addWidget(defaults_group)
 
         # UI Language Group
         ui_lang_group = QGroupBox(tr("settings_ui_language"))
@@ -803,12 +813,18 @@ class SettingsDialog(QDialog):
         self.ui_lang_combo.setCurrentIndex(idx if idx != -1 else 0)
         ui_lang_layout.addWidget(self.ui_lang_combo)
         ui_lang_layout.addStretch()
-        layout.addWidget(ui_lang_group)
+        general_layout.addWidget(ui_lang_group)
         
         # Restart notice
         restart_label = QLabel(tr("settings_ui_lang_restart"))
         restart_label.setStyleSheet("color: #FFA07A; font-style: italic;")
-        layout.addWidget(restart_label)
+        general_layout.addWidget(restart_label)
+
+        tabs.addTab(general_tab, tr("settings_tab_general"))
+
+        # --- PLUGINS TAB ---
+        self.plugins_widget = PluginSettingsWidget(self.settings, self)
+        tabs.addTab(self.plugins_widget, tr("plugins_title"))
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel

@@ -86,7 +86,7 @@ class BatchAIWorker(QRunnable):
         
         # Define progress callback
         def on_chunk_done(processed_count, total_count, chunk_translations):
-            # Update UI with translations from this chunk
+            # Update file model for all translations in chunk (NO UI updates here)
             for t_item in chunk_translations:
                 internal_idx = t_item.get("i")
                 if internal_idx is not None and internal_idx < len(valid_indices):
@@ -94,13 +94,10 @@ class BatchAIWorker(QRunnable):
                     translated = t_item.get("t")
                     
                     if translated:
-                        # Update file model
+                        # Update file model only - NO SIGNALS during translation
                         self.parsed_file.update_item_text(real_idx, translated)
-                        # Emit UI update
-                        self.signals.item_updated.emit(real_idx, translated, {'file_path': self.parsed_file.file_path})
             
-            # Emit progress (map processed_count back to original indices scale)
-            # processed_count is relative to valid items, scale to total
+            # Emit progress only (no item_updated signals during translation)
             progress_ratio = processed_count / total_count if total_count > 0 else 1
             progress_value = int(progress_ratio * total)
             self.signals.progress.emit(progress_value, total)

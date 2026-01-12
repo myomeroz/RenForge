@@ -75,19 +75,32 @@ def handle_tab_changed(main_window, index):
     main_window._display_current_item_status()
 
     # table_widget is attached dynamically in gui_file_manager
-    table_widget = getattr(file_data, 'table_widget', None)
+    # Yeni mimari: table_widget yerine table_view olabilir (TranslationTableView)
+    table_widget = main_window._get_current_table()
     if table_widget:
         table_widget.setFocus()
-
-        if table_widget.rowCount() > 0 and not table_widget.selectedItems():
-             current_item_idx = main_window._get_current_item_index() 
-             if current_item_idx >= 0 and current_item_idx < table_widget.rowCount():
-                  table_widget.selectRow(current_item_idx)
-
-             else:
-
-                  table_widget.selectRow(0)
-                  main_window._set_current_item_index(0) 
+        
+        # QTableView/QTableWidget uyumlu selection kontrolü
+        has_selection = False
+        row_count = 0
+        
+        # QTableView (yeni mimari)
+        if hasattr(table_widget, 'selectionModel') and table_widget.selectionModel():
+            has_selection = len(table_widget.selectionModel().selectedRows()) > 0
+            model = table_widget.model()
+            row_count = model.rowCount() if model else 0
+        # QTableWidget (eski mimari)
+        elif hasattr(table_widget, 'selectedItems'):
+            has_selection = len(table_widget.selectedItems()) > 0
+            row_count = table_widget.rowCount()
+        
+        if row_count > 0 and not has_selection:
+            current_item_idx = main_window._get_current_item_index() 
+            if current_item_idx >= 0 and current_item_idx < row_count:
+                table_widget.selectRow(current_item_idx)
+            else:
+                table_widget.selectRow(0)
+                main_window._set_current_item_index(0) 
 
 def find_tab_by_path(main_window, file_path):
     for index, path in main_window.tab_data.items():

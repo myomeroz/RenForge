@@ -47,6 +47,12 @@ def bootstrap() -> Tuple[AppController, 'RenForgeGUI']:
     container = DIContainer.instance()
     container.clear()  # Start fresh
     
+    # Stage 7: Initialize Plugin System
+    from core.plugin_manager import PluginManager
+    plugin_manager = PluginManager()
+    plugin_manager.initialize()
+    logger.info("Plugin System Initialized")
+    
     # =========================================================================
     # REGISTER MODELS (Singletons)
     # =========================================================================
@@ -295,14 +301,20 @@ def _on_file_opened_from_controller(view: 'RenForgeGUI', parsed_file):
     """
     Handle file opened signal from controller.
     
-    This creates the UI elements for the file - tab, table, etc.
-    Bridges controller events to legacy GUI manager functions.
+    Bu fonksiyon dosya açıldığında UI oluşturur.
+    YENİ: Model-View mimarisi kullanılıyor - UI donması yok!
+    
+    PERFORMANS:
+    - Eski: QTableWidget + 11,500 item oluşturma = UI donması
+    - Yeni: QTableView + Model = Virtual scrolling, sadece ~30 satır render
     """
     logger.info(f"Controller opened file: {parsed_file.filename}, mode: {parsed_file.mode}")
     
     # Import legacy managers for UI creation
     import gui.gui_tab_manager as tab_manager
-    import gui.gui_table_manager as table_manager
+    
+    # YENİ: Model-View mimarisi kullanıyoruz
+    from gui.views import file_table_view
     
     # Check if file is already open
     file_path = str(parsed_file.file_path)
@@ -315,14 +327,7 @@ def _on_file_opened_from_controller(view: 'RenForgeGUI', parsed_file):
                 return
     
     # Directly store the ParsedFile
-    # Ideally RenForgeGUI should just accept ParsedFile objects
     view.file_data[file_path] = parsed_file
-    view.current_file_path = file_path
-    
-    # Dynamic attribute for legacy compatibility if needed
-    # The view expects .table_widget on the data object sometimes
-    # We can handle this when creating the table
-
     view.current_file_path = file_path
     
     # =============================================
@@ -330,30 +335,30 @@ def _on_file_opened_from_controller(view: 'RenForgeGUI', parsed_file):
     # =============================================
     try:
         project_model = view._app_controller.project
-        # Project model uses ParsedFile, so we add the original parsed_file
         project_model.add_file(parsed_file)
         project_model.set_active_file(file_path)
         logger.debug(f"  Synced to project_model: {file_path}")
     except Exception as e:
         logger.warning(f"  Failed to sync to project_model: {e}")
     
-    # Create tab and table using legacy managers (Refactored to manual creation below)
+    # =============================================
+    # YENİ: MODEL-VIEW MİMARİSİ İLE TABLO OLUŞTUR
+    # =============================================
     
-    # Get the newly created table and populate it
-    # Create table widget (using legacy manager helper)
-    table_widget = table_manager.create_table_widget(view)
-    table_widget.setProperty("filePath", file_path)
-
-    # Populate table with parsed items
-    mode_str = parsed_file.mode.value if hasattr(parsed_file.mode, 'value') else str(parsed_file.mode)
-    table_manager.populate_table(table_widget, parsed_file.items, mode_str)
-
-
-
+    # Yeni TranslationTableView oluştur (QTableWidget yerine!)
+    table_view = file_table_view.create_table_view(view)
+    table_view.setProperty("filePath", file_path)
+    
+    # Veriyi modele yükle (populate_table yerine!)
+    # Bu çağrı artık DONMA YAPMAZ çünkü:
+    # 1. Model sadece list referansı tutuyor
+    # 2. View sadece görünen satırları render ediyor
+    file_table_view.load_data_to_view(table_view, parsed_file)
+    
     # Add tab
     import os
     base_name = os.path.basename(file_path)
-    tab_manager.add_new_tab(view, file_path, table_widget, base_name)
+    tab_manager.add_new_tab(view, file_path, table_view, base_name)
     
     # Update UI state
     view._update_language_model_display()

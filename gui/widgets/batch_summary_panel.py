@@ -27,9 +27,10 @@ class BatchSummaryPanel(QDockWidget):
     """
     
     undo_requested = pyqtSignal()  # Emitted when Undo button clicked
+    open_review_requested = pyqtSignal() # Emitted when Review button clicked
     
     def __init__(self, parent=None):
-        super().__init__("Last Batch Summary", parent)
+        super().__init__(tr("batch_panel_title"), parent)
         self.setObjectName("BatchSummaryPanel")
         self.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea | 
                             Qt.DockWidgetArea.RightDockWidgetArea)
@@ -41,7 +42,7 @@ class BatchSummaryPanel(QDockWidget):
         layout.setSpacing(6)
         
         # Status line
-        self.status_label = QLabel("No batch operation yet")
+        self.status_label = QLabel(tr("batch_no_op"))
         self.status_label.setFont(QFont("", -1, QFont.Weight.Bold))
         layout.addWidget(self.status_label)
         
@@ -52,11 +53,11 @@ class BatchSummaryPanel(QDockWidget):
         stats_layout.setContentsMargins(6, 6, 6, 6)
         stats_layout.setSpacing(2)
         
-        self.total_label = QLabel("Total: -")
-        self.success_label = QLabel("Success: -")
-        self.failed_label = QLabel("Failed: -")
-        self.fallback_label = QLabel("Fallback: -")
-        self.elapsed_label = QLabel("Elapsed: -")
+        self.total_label = QLabel(tr("batch_label_total") + " -")
+        self.success_label = QLabel(tr("batch_label_success") + " -")
+        self.failed_label = QLabel(tr("batch_label_failed") + " -")
+        self.fallback_label = QLabel(tr("batch_label_fallback") + " -")
+        self.elapsed_label = QLabel(tr("batch_label_elapsed") + " -")
         
         stats_layout.addWidget(self.total_label)
         stats_layout.addWidget(self.success_label)
@@ -69,15 +70,19 @@ class BatchSummaryPanel(QDockWidget):
         # Buttons
         btn_layout = QHBoxLayout()
         
-        self.copy_btn = QPushButton("📋 Copy Summary")
+        self.copy_btn = QPushButton(f"📋 {tr('batch_copy_summary')}")
         self.copy_btn.clicked.connect(self._copy_summary)
         self.copy_btn.setEnabled(False)
         btn_layout.addWidget(self.copy_btn)
         
-        self.undo_btn = QPushButton("↩️ Undo Last Batch")
+        self.undo_btn = QPushButton(f"↩️ {tr('batch_undo_last')}")
         self.undo_btn.clicked.connect(self._request_undo)
         self.undo_btn.setEnabled(False)
         btn_layout.addWidget(self.undo_btn)
+        
+        self.review_btn = QPushButton(f"🔍 {tr('review_open_btn')}")
+        self.review_btn.clicked.connect(self._request_open_review)
+        btn_layout.addWidget(self.review_btn)
         
         layout.addLayout(btn_layout)
         layout.addStretch()
@@ -106,35 +111,33 @@ class BatchSummaryPanel(QDockWidget):
         
         # Update status
         if canceled:
-            self.status_label.setText("⚠️ CANCELED")
+            self.status_label.setText(f"⚠️ {tr('batch_status_canceled')}")
             self.status_label.setStyleSheet("color: #FFA500;")  # Orange
         elif failed > 0:
-            self.status_label.setText("⚠️ DONE with errors")
+            self.status_label.setText(f"⚠️ {tr('batch_status_done_errors')}")
             self.status_label.setStyleSheet("color: #FF6B6B;")  # Red
         else:
-            self.status_label.setText("✅ DONE")
+            self.status_label.setText(f"✅ {tr('batch_status_done')}")
             self.status_label.setStyleSheet("color: #4CAF50;")  # Green
         
         # Update stats
-        self.total_label.setText(f"Total: {total}")
-        self.success_label.setText(f"Success: {success}")
-        self.failed_label.setText(f"Failed: {failed}")
-        self.fallback_label.setText(f"Fallback: {fallback}")
+        self.total_label.setText(f"{tr('batch_label_total')} {total}")
+        self.success_label.setText(f"{tr('batch_label_success')} {success}")
+        self.failed_label.setText(f"{tr('batch_label_failed')} {failed}")
+        self.fallback_label.setText(f"{tr('batch_label_fallback')} {fallback}")
         
-        if isinstance(elapsed, (int, float)):
-            self.elapsed_label.setText(f"Elapsed: {elapsed:.1f}s")
-        else:
-            self.elapsed_label.setText(f"Elapsed: {elapsed}")
+        elapsed_text = f"{elapsed:.1f}s" if isinstance(elapsed, (int, float)) else str(elapsed)
+        self.elapsed_label.setText(f"{tr('batch_label_elapsed')} {elapsed_text}")
         
         # Build summary text
-        status_str = "CANCELED" if canceled else "DONE"
+        status_str = tr("batch_status_canceled") if canceled else tr("batch_status_done")
         self._summary_text = (
             f"Batch Translation {status_str}\n"
             f"Total: {total}\n"
             f"Success: {success}\n"
             f"Failed: {failed}\n"
             f"Fallback: {fallback}\n"
-            f"Elapsed: {elapsed:.1f}s" if isinstance(elapsed, (int, float)) else f"Elapsed: {elapsed}"
+            f"Elapsed: {elapsed_text}"
         )
         
         self.copy_btn.setEnabled(True)
@@ -155,16 +158,19 @@ class BatchSummaryPanel(QDockWidget):
     def _request_undo(self):
         """Emit undo request signal."""
         self.undo_requested.emit()
+
+    def _request_open_review(self):
+        self.open_review_requested.emit()
     
     def clear(self):
         """Clear the panel."""
-        self.status_label.setText("No batch operation yet")
+        self.status_label.setText(tr("batch_no_op"))
         self.status_label.setStyleSheet("")
-        self.total_label.setText("Total: -")
-        self.success_label.setText("Success: -")
-        self.failed_label.setText("Failed: -")
-        self.fallback_label.setText("Fallback: -")
-        self.elapsed_label.setText("Elapsed: -")
+        self.total_label.setText(tr("batch_label_total") + " -")
+        self.success_label.setText(tr("batch_label_success") + " -")
+        self.failed_label.setText(tr("batch_label_failed") + " -")
+        self.fallback_label.setText(tr("batch_label_fallback") + " -")
+        self.elapsed_label.setText(tr("batch_label_elapsed") + " -")
         self.copy_btn.setEnabled(False)
         self.undo_btn.setEnabled(False)
         self._last_results = None

@@ -78,19 +78,12 @@ class UIBuilder:
         self.main.project_view_button.setIcon(safe_icon("pics/project.svg"))
         self.main.project_view_button.setToolTip("Show/hide project panel")
         self.main.project_view_button.setCheckable(True)
-        self.main.project_view_button.setChecked(False)
-        self.main.project_view_button.toggled.connect(self.main._handle_activity_bar_toggle)
+        self.main.project_view_button.setChecked(True)
+        # We need to update this handler since we removed stack
+        self.main.project_view_button.toggled.connect(self.main._set_left_panel_visibility)
         layout.addWidget(self.main.project_view_button)
         
-        # Search view button
-        self.main.search_view_button = QToolButton()
-        self.main.search_view_button.setObjectName("searchViewButton")
-        self.main.search_view_button.setIcon(safe_icon("pics/search.svg"))
-        self.main.search_view_button.setToolTip("Show/hide search and replace panel")
-        self.main.search_view_button.setCheckable(True)
-        self.main.search_view_button.setChecked(False)
-        self.main.search_view_button.toggled.connect(self.main._handle_activity_bar_toggle)
-        layout.addWidget(self.main.search_view_button)
+        # Search button REMOVED (Moved to Translation Dock)
         
         layout.addStretch()
         
@@ -98,14 +91,15 @@ class UIBuilder:
         return activity_bar
     
     def build_left_panel(self) -> QWidget:
-        """Build the left panel container with project tree and search/replace panel."""
+        """Build the left panel container with project tree."""
         # Container
         container = QWidget()
         container.setObjectName("leftPanelContainer")
         container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         container.setMinimumWidth(200)
         
-        panel_layout = QStackedLayout(container)
+        # Previously StackedLayout, now just VBox for project tree
+        panel_layout = QVBoxLayout(container)
         panel_layout.setContentsMargins(0, 0, 0, 0)
         
         # Project panel
@@ -121,7 +115,18 @@ class UIBuilder:
         
         panel_layout.addWidget(project_panel)
         
-        # Search/Replace panel
+        # No search panel here anymore
+        
+        # Defaults to visible? Or rely on saved state.
+        # container.hide() # Let controller manage visibility
+        
+        self.main.left_panel_container = container
+        self.main.project_panel = project_panel
+        
+        return container
+        
+    def build_search_panel(self) -> QWidget:
+        """Build the search and replace panel widget (independent)."""
         search_panel = QWidget()
         search_panel.setObjectName("searchReplacePanel")
         search_layout = QVBoxLayout(search_panel)
@@ -141,21 +146,55 @@ class UIBuilder:
         search_layout.addWidget(self.main.replace_input)
         
         # Options
-        options_layout = QHBoxLayout()
+        options_layout = QVBoxLayout()
+        
+        # Scope Selector
+        scope_layout = QHBoxLayout()
+        scope_layout.addWidget(QLabel(tr("search_scope_label")))
+        self.main.search_scope_combo = QComboBox()
+        self.main.search_scope_combo.addItem(tr("search_scope_visible"), "visible")
+        self.main.search_scope_combo.addItem(tr("search_scope_all"), "all")
+        scope_layout.addWidget(self.main.search_scope_combo)
+        options_layout.addLayout(scope_layout)
+
+        # Checkboxes
+        checks_layout = QHBoxLayout()
         self.main.regex_checkbox = QCheckBox(tr("toolbar_regex"))
         self.main.regex_checkbox.setToolTip("Use regular expressions for search")
-        options_layout.addWidget(self.main.regex_checkbox)
-        options_layout.addStretch()
+        checks_layout.addWidget(self.main.regex_checkbox)
+
+        self.main.search_safe_mode_chk = QCheckBox(tr("search_safe_mode"))
+        self.main.search_safe_mode_chk.setToolTip("Prevent breaking Ren'Py tokens")
+        self.main.search_safe_mode_chk.setChecked(True)
+        checks_layout.addWidget(self.main.search_safe_mode_chk)
+        
+        options_layout.addLayout(checks_layout)
         search_layout.addLayout(options_layout)
         
+        # Match Info
+        self.main.search_info_label = QLabel(tr("search_no_matches"))
+        self.main.search_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.main.search_info_label.setStyleSheet("color: gray; font-size: 11px;")
+        search_layout.addWidget(self.main.search_info_label)
+
         # Buttons
         buttons_layout = QVBoxLayout()
         
+        nav_layout = QHBoxLayout()
+        # Find Prev
+        self.main.find_prev_btn = QPushButton(tr("btn_find_prev"))
+        self.main.find_prev_btn.setToolTip("Find previous occurrence")
+        self.main.find_prev_btn.clicked.connect(lambda: action_handler.handle_find_prev(self.main)) 
+        nav_layout.addWidget(self.main.find_prev_btn)
+        
+        # Find Next
         self.main.find_next_btn = QPushButton(tr("btn_find_next"))
         self.main.find_next_btn.setIcon(safe_icon("pics/find_next.svg"))
         self.main.find_next_btn.setToolTip("Find next occurrence")
         self.main.find_next_btn.clicked.connect(lambda: action_handler.handle_find_next(self.main))
-        buttons_layout.addWidget(self.main.find_next_btn)
+        nav_layout.addWidget(self.main.find_next_btn)
+        
+        buttons_layout.addLayout(nav_layout)
         
         self.main.replace_btn = QPushButton(tr("btn_replace"))
         self.main.replace_btn.setIcon(safe_icon("pics/replace.svg"))
@@ -172,16 +211,8 @@ class UIBuilder:
         search_layout.addLayout(buttons_layout)
         search_layout.addStretch()
         
-        panel_layout.addWidget(search_panel)
-        
-        container.hide()
-        
-        self.main.left_panel_container = container
-        self.main.left_panel_layout = panel_layout
-        self.main.project_panel = project_panel
         self.main.search_replace_panel = search_panel
-        
-        return container
+        return search_panel
     
     def build_settings_group(self) -> QGroupBox:
         """Build the top settings toolbar group."""
@@ -298,15 +329,15 @@ class UIBuilder:
         self.main.batch_ai_btn.clicked.connect(lambda: self.main.batch_ai_requested.emit())
         row1.addWidget(self.main.batch_ai_btn)
         
-        self.main.revert_btn = QPushButton(tr("btn_revert"))
+        self.main.revert_btn = QPushButton(f"↶ {tr('btn_revert_row')}")
         self.main.revert_btn.setIcon(safe_icon("pics/revert.svg"))
-        self.main.revert_btn.setToolTip("Revert selected lines")
+        self.main.revert_btn.setToolTip(tr('tip_revert_row'))
         self.main.revert_btn.clicked.connect(lambda: table_manager.revert_selected_items(self.main))
         row1.addWidget(self.main.revert_btn)
         
-        self.main.revert_all_btn = QPushButton(tr("btn_revert_all"))
+        self.main.revert_all_btn = QPushButton(f"↺ {tr('btn_revert_all')}")
         self.main.revert_all_btn.setIcon(safe_icon("pics/revert_all.svg"))
-        self.main.revert_all_btn.setToolTip("Revert all unsaved changes")
+        self.main.revert_all_btn.setToolTip(tr('tip_revert_all'))
         self.main.revert_all_btn.clicked.connect(lambda: table_manager.revert_all_items(self.main))
         row1.addWidget(self.main.revert_all_btn)
         
@@ -363,9 +394,22 @@ class UIBuilder:
         layout = QVBoxLayout(area)
         layout.setContentsMargins(4, 0, 0, 0)
         
-        layout.addWidget(self.build_settings_group())
-        layout.addWidget(self.build_tab_widget(), 1)
+        # Layout Order: Toolbar -> Filter -> Tabs -> Settings (or Settings -> Toolbar?)
+        # User requested: "Menubar on top, toolbar below, main content below."
+        
+        # 1. Tools (Toolbar)
         layout.addWidget(self.build_tools_group())
+        
+        # 2. Filter Toolbar (Stage 5)
+        if hasattr(self.main, 'filter_toolbar'):
+            layout.addWidget(self.main.filter_toolbar)
+            self.main.filter_toolbar.show() # Ensure visible
+            
+        # 3. Main Content (Tabs)
+        layout.addWidget(self.build_tab_widget(), 1)
+        
+        # 4. Settings (Bottom - less clutter at top)
+        layout.addWidget(self.build_settings_group())
         
         return area
     
@@ -446,6 +490,15 @@ class UIBuilder:
             self.main.close_tab_requested.emit(idx)
         close_tab.triggered.connect(on_close_tab)
         self.main.close_tab_action = close_tab
+        
+        file_menu.addSeparator()
+        
+        # Packaging
+        export_pack = file_menu.addAction(tr("menu_file_export_pack"))
+        export_pack.triggered.connect(lambda: self.main._handle_export_pack())
+        
+        import_pack = file_menu.addAction(tr("menu_file_import_pack"))
+        import_pack.triggered.connect(lambda: self.main._handle_import_pack())
         
         file_menu.addSeparator()
         
@@ -543,12 +596,53 @@ class UIBuilder:
         self.main.project_view_button.toggled.connect(toggle_project.setChecked)
         self.main.toggle_project_panel_action = toggle_project
         
-        toggle_search = view_menu.addAction(tr("menu_view_search"))
-        toggle_search.setCheckable(True)
-        toggle_search.setChecked(False)
-        toggle_search.triggered.connect(self.main.search_view_button.click)
-        self.main.search_view_button.toggled.connect(toggle_search.setChecked)
-        self.main.toggle_search_panel_action = toggle_search
+        view_menu.addSeparator()
+        
+        # Workspace Menu (Stage 14)
+        workspace_menu = view_menu.addMenu(tr("workspace_settings")) # Reusing key or new one
+        
+        # Reset Layout
+        reset_layout = workspace_menu.addAction("Reset Layout") # Transform to tr key later if needed
+        def reset_workspace():
+             # Basic reset logic or restore default sizes
+             self.main.restoreState(self.main.settings.get("window_state", b""))
+             # Ensure docks are tabified if reset breaks it? 
+             # For now, just a placeholder or simple state restore if we had a default state.
+             pass
+        # reset_layout.triggered.connect(reset_workspace) 
+        
+        # Shortcuts for Docks
+        # We add them as hidden actions to the main window or view menu to enable shortcuts
+        dock_actions = [
+            (self.main.workspace_docks['translation'], "Ctrl+1"),
+            (self.main.workspace_docks['review'], "Ctrl+2"),
+            (self.main.workspace_docks['quality'], "Ctrl+3"),
+            (self.main.workspace_docks['consistency'], "Ctrl+4"),
+            (self.main.workspace_docks['settings'], "Ctrl+5"),
+        ]
+        
+        for dock, shortcut in dock_actions:
+            action = view_menu.addAction(dock.windowTitle())
+            action.setShortcut(shortcut)
+            # Create a closure to capture 'dock' correctly
+            def make_trigger(d):
+                return lambda: d.raise_()
+            action.triggered.connect(make_trigger(dock))
+            
+            # Also valid to just toggle visibility? Tabbed docks are usually always visible as a group.
+            # But the dock itself might be hidden. 
+            # Ideally: Ensure Right Dock Area is visible, then raise the dock.
+
+        
+        # Stage 6: Glossary View Toggle
+        view_menu.addSeparator()
+        if hasattr(self.main, 'glossary_panel'):
+            toggle_glossary = view_menu.addAction(tr("glossary_title"))
+            toggle_glossary.setCheckable(True)
+            toggle_glossary.setChecked(False)
+            toggle_glossary.triggered.connect(lambda checked: self.main.glossary_panel.setVisible(checked))
+            # Sync check state when panel is closed via X/dock
+            self.main.glossary_panel.visibilityChanged.connect(toggle_glossary.setChecked)
         
         # Help menu
         help_menu = menu_bar.addMenu(tr("menu_help"))

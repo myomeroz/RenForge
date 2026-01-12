@@ -77,9 +77,9 @@ class BatchController(QObject):
         Handle batch item update signal from worker.
         
         Args:
-            item_index: Index of the item being updated
-            translated_text: The translated text
-            updated_item_data_copy: Optional data dict, may contain 'file_path'
+            item_index: Index of the item being updated (-1 for batch mode)
+            translated_text: The translated text (empty for batch mode)
+            updated_item_data_copy: Optional data dict, may contain 'file_path' and 'batch_items'
         """
         updated_item_data_copy = updated_item_data_copy or {}
         file_path = updated_item_data_copy.get('file_path')
@@ -98,7 +98,7 @@ class BatchController(QObject):
         current_lines = current_file_data.lines
         current_mode = current_file_data.mode
         
-        # Resolve table widget on-demand via file_table_view
+        # Resolve table widget ONCE
         table_widget = file_table_view.resolve_table_widget(self.main, current_file_data.file_path)
         
         if not table_widget:
@@ -108,49 +108,135 @@ class BatchController(QObject):
         if not current_items or not current_lines or not current_mode:
             logger.error("Batch update failed: Missing items/lines/mode in file data")
             return
+        
+        # Check for batch mode (item_index = -1 with batch_items in data)
+        batch_items = updated_item_data_copy.get('batch_items', [])
+        
+        if item_index == -1 and batch_items:
+            # BATCH MODE: Process entire chunk at once
+            self._process_batch_chunk(
+                batch_items, current_file_data, current_items, 
+                current_lines, current_mode, table_widget
+            )
+        elif item_index >= 0:
+            # SINGLE ITEM MODE (legacy/Google translate)
+            self._process_single_item(
+                item_index, translated_text, current_file_data,
+                current_items, current_lines, current_mode, table_widget
+            )
+    
+    def _process_batch_chunk(self, batch_items, current_file_data, current_items, 
+                              current_lines, current_mode, table_widget):
+        """Process a batch of translations efficiently."""
+        from core.change_log import get_change_log, ChangeRecord, ChangeSource
+        import time
+        
+        # Disable table updates while processing
+        table_widget.setUpdatesEnabled(False)
+        
+        try:
+            for batch_item in batch_items:
+                idx = batch_item.get('index')
+                text = batch_item.get('text')
+                
+                if idx is None or text is None:
+                    continue
+                    
+                if not (0 <= idx < len(current_items)):
+                    logger.warning(f"Batch chunk: Index {idx} out of bounds")
+                    continue
+                
+                item_data = current_items[idx]
+                before_text = item_data.current_text or ""
+                
+                # Update item
+                item_data.current_text = text
+                item_data.is_modified_session = True
+                
+                # Record change (lightweight)
+                record = ChangeRecord(
+                    timestamp=time.time(),
+                    file_path=current_file_data.file_path,
+                    item_index=idx,
+                    display_row=item_data.line_index + 1 if item_data.line_index is not None else idx + 1,
+                    before_text=before_text,
+                    after_text=text,
+                    source=ChangeSource.BATCH,
+                    batch_id="batch"
+                )
+                get_change_log().add_record(record)
+                
+                # Update table cell directly (no style update)
+                try:
+                    table_manager.update_table_item_text(self.main, table_widget, idx, 4, text)
+                except Exception as e:
+                    logger.debug(f"Batch table update error for idx {idx}: {e}")
+                
+                # Update file lines for 'translate' mode
+                if current_mode == 'translate':
+                    line_idx = getattr(item_data, 'line_index', None)
+                    if line_idx is not None and 0 <= line_idx < len(current_lines):
+                        try:
+                            new_line = parser.format_line_from_components(item_data, text)
+                            if new_line is not None:
+                                current_lines[line_idx] = new_line
+                        except Exception as e:
+                            logger.debug(f"Batch line format error for idx {idx}: {e}")
             
+            # Mark file as modified once
+            current_file_data.is_modified = True
+            
+        finally:
+            # Re-enable table updates
+            table_widget.setUpdatesEnabled(True)
+    
+    def _process_single_item(self, item_index, translated_text, current_file_data,
+                              current_items, current_lines, current_mode, table_widget):
+        """Process a single translation item (legacy mode)."""
+        from core.change_log import get_change_log, ChangeRecord, ChangeSource
+        import time
+        
         if not (0 <= item_index < len(current_items)):
             logger.error(f"Batch update failed: Index {item_index} out of bounds (len: {len(current_items)})")
             return
         
-        # Update item data
         original_item_data = current_items[item_index]
+        before_text = original_item_data.current_text or ""
+        
         original_item_data.current_text = translated_text
         original_item_data.is_modified_session = True
         current_file_data.is_modified = True
         
-        # Update table display
-        try:
-             table_manager.update_table_item_text(self.main, table_widget, item_index, 4, translated_text)
-             table_manager.update_table_row_style(table_widget, item_index, original_item_data)
-        except Exception as e:
-             logger.error(f"Batch update table UI failed: {e}")
+        record = ChangeRecord(
+            timestamp=time.time(),
+            file_path=current_file_data.file_path,
+            item_index=item_index,
+            display_row=original_item_data.line_index + 1 if original_item_data.line_index is not None else item_index + 1,
+            before_text=before_text,
+            after_text=translated_text,
+            source=ChangeSource.BATCH,
+            batch_id="batch"
+        )
+        get_change_log().add_record(record)
         
-        # Update file lines for 'translate' mode
-        update_line_error = False
+        try:
+            table_manager.update_table_item_text(self.main, table_widget, item_index, 4, translated_text)
+            table_manager.update_table_row_style(table_widget, item_index, original_item_data)
+        except Exception as e:
+            logger.error(f"Batch update table UI failed: {e}")
+        
         if current_mode == 'translate':
             line_index_to_update = getattr(original_item_data, 'line_index', None)
             
             if line_index_to_update is not None and 0 <= line_index_to_update < len(current_lines):
-                # Use original_item_data for reconstruction (it contains parsed_data)
-                # Parse logic expects ParsedItem or dict with 'parsed_data'
                 try:
                     new_line = parser.format_line_from_components(original_item_data, translated_text)
                     if new_line is not None:
                         current_lines[line_index_to_update] = new_line
                     else:
-                        update_line_error = True
-                        logger.error(f"Failed to format line for file index {line_index_to_update}")
+                        self._errors.append(f"- Error updating file line {line_index_to_update+1} for item {item_index+1}")
                 except Exception as e:
-                    update_line_error = True
-                    logger.error(f"Error formatting line: {e}")
-            else:
-                update_line_error = True
-                logger.error(f"Invalid line index {line_index_to_update} for item {item_index}")
-            
-            if update_line_error:
-                err_detail = f"- Error updating file line {line_index_to_update+1} for item {item_index+1}"
-                self._errors.append(err_detail)
+                    self._errors.append(f"- Error formatting line: {e}")
     
     @pyqtSlot(str)
     def handle_error(self, details: str):
@@ -200,6 +286,54 @@ class BatchController(QObject):
         merged_results = dict(results)
         merged_results['errors'] = all_errors
         merged_results['warnings'] = all_warnings
+        
+        # CRITICAL: Refresh table UI with updated model data
+        # This is done ONCE after all translations complete (not during)
+        current_file_data = self.main._get_current_file_data()
+        current_table = self.main._get_current_table()
+        
+        if current_file_data and current_table:
+            # Block signals to avoid triggering item_changed during refresh
+            was_blocked = self.main._block_item_changed_signal
+            self.main._block_item_changed_signal = True
+            
+            try:
+                # Update file lines for all modified items (translate mode)
+                if current_file_data.mode == 'translate':
+                    current_lines = current_file_data.lines
+                    for item in current_file_data.items:
+                        if item.is_modified_session:
+                            line_idx = getattr(item, 'line_index', None)
+                            if line_idx is not None and 0 <= line_idx < len(current_lines):
+                                try:
+                                    new_line = parser.format_line_from_components(item, item.current_text)
+                                    if new_line is not None:
+                                        current_lines[line_idx] = new_line
+                                except Exception as e:
+                                    logger.debug(f"Line format error at {line_idx}: {e}")
+                
+                # YENİ: Model-View API ile senkronizasyon
+                # Eski populate_table KULLANILMIYOR - o UI'ı bloke ederdi!
+                from gui.views.translation_table_view import TranslationTableView
+                
+                if isinstance(current_table, TranslationTableView):
+                    # Yeni TranslationTableView: Model güncelle
+                    file_table_view.sync_parsed_file_to_view(current_table, current_file_data)
+                    logger.info("[BatchController] Table synced via Model-View API")
+                else:
+                    # Eski QTableWidget fallback (geriye dönük uyumluluk)
+                    table_manager.populate_table(
+                        current_table, 
+                        current_file_data.items, 
+                        current_file_data.mode
+                    )
+                    logger.info("[BatchController] Table refreshed via legacy populate_table")
+                
+            finally:
+                self.main._block_item_changed_signal = was_blocked
+            
+            # Mark file as modified
+            current_file_data.is_modified = True
         
         # Use batch_status_view for formatting
         summary_msg = batch_status_view.format_batch_summary(merged_results)

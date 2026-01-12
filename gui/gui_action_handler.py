@@ -63,7 +63,7 @@ def edit_with_ai(main_window):
 
     current_items = current_file_data.items
     current_mode = current_file_data.mode
-    table_widget = _resolve_table_widget(main_window, current_file_data.file_path)
+    table_widget = resolve_table_widget(main_window, current_file_data.file_path)
 
     if not current_items or not current_mode or not table_widget or not (0 <= item_index < len(current_items)):
         logger.error("edit_with_ai - Invalid data state.")
@@ -117,7 +117,7 @@ def translate_with_google(main_window):
 
     current_items = current_file_data.items
     current_mode = current_file_data.mode
-    table_widget = _resolve_table_widget(main_window, current_file_data.file_path)
+    table_widget = resolve_table_widget(main_window, current_file_data.file_path)
 
     if not current_items or not current_mode or not table_widget or not (0 <= item_index < len(current_items)):
         logger.error("translate_with_google - Invalid data state.")
@@ -273,6 +273,16 @@ def batch_translate_google(main_window):
 
     progress.show()
     main_window.statusBar().showMessage(tr("batch_starting"), 0) 
+    
+    # Disable sorting to prevent freeze on updates
+    was_sorting = current_table.isSortingEnabled()
+    current_table.setSortingEnabled(False)
+    
+    # Restore sorting on finish
+    def restore_sorting():
+        current_table.setSortingEnabled(was_sorting)
+        
+    signals.finished.connect(restore_sorting) 
 
 def batch_translate_ai(main_window):
     logger.debug("[batch_translate_ai] Action triggered.")
@@ -389,6 +399,16 @@ def batch_translate_ai(main_window):
     
     progress.show()
     main_window.statusBar().showMessage(tr("batch_starting"), 0)
+    
+    # Disable sorting to prevent freeze on updates
+    was_sorting = current_table.isSortingEnabled()
+    current_table.setSortingEnabled(False)
+    
+    # Restore sorting on finish
+    def restore_sorting():
+        current_table.setSortingEnabled(was_sorting)
+        
+    signals.finished.connect(restore_sorting)
 
 def navigate_prev(main_window):
     current_table = main_window._get_current_table()
@@ -703,241 +723,60 @@ def delete_line(main_window):
     else: 
         main_window.statusBar().showMessage(tr("delete_line_canceled"), 3000)
 
-def handle_find_next(main_window):
-    current_file_data = main_window._get_current_file_data()
+def handle_find_prev(main_window):
+    """Delegate to SearchManager."""
+    if not getattr(main_window, 'search_manager', None): return
+
     current_table = main_window._get_current_table()
+    if not current_table: return
+
     search_text = main_window.search_input.text() if main_window.search_input else ""
     use_regex = main_window.regex_checkbox.isChecked() if main_window.regex_checkbox else False 
+    
+    main_window.search_manager.find_prev(current_table, search_text, use_regex)
 
-    if not current_file_data or not current_table or not search_text:
+def handle_find_next(main_window):
+    """Delegate to SearchManager."""
+    if not getattr(main_window, 'search_manager', None):
+        logger.error("SearchManager not initialized.")
+        return
+
+    current_table = main_window._get_current_table()
+    if not current_table:
         main_window.statusBar().showMessage(tr("search_enter_text_error"), 3000)
         return
 
-    if use_regex:
-        try:
-            re.compile(search_text)
-        except re.error as e:
-            main_window.statusBar().showMessage(tr("search_regex_error", error=e), 5000)
-            return
-
-    current_items = current_file_data.get('items')
-    current_mode = current_file_data.get('mode')
-    start_index = main_window._get_current_item_index()
-
-    if not current_items or not current_mode:
-        main_window.statusBar().showMessage(tr("search_no_data"), 3000)
-        return
-
-    num_items = len(current_items)
-    found_item_index = -1
-
-    for i in range(start_index + 1, num_items):
-
-        if table_manager.find_text_in_item(current_items[i], search_text, current_mode, use_regex=use_regex):
-            found_item_index = i
-            break
-    else: 
-        for i in range(start_index + 1):
-
-            if table_manager.find_text_in_item(current_items[i], search_text, current_mode, use_regex=use_regex):
-                found_item_index = i
-                main_window.statusBar().showMessage(tr("search_restarted", text=search_text), 2000)
-                break
-
-    if found_item_index != -1:
-        current_table.selectRow(found_item_index)
-        current_table.scrollToItem(current_table.item(found_item_index, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
-
-        search_mode_str = "(Regex) " if use_regex else ""
-        main_window.statusBar().showMessage(f"{search_mode_str}{tr('search_found', text=search_text, line=found_item_index + 1)}", 3000)
-    else:
-        search_mode_str = "(Regex) " if use_regex else ""
-        main_window.statusBar().showMessage(f"{search_mode_str}{tr('search_not_found', text=search_text)}", 3000)
+    search_text = main_window.search_input.text() if main_window.search_input else ""
+    use_regex = main_window.regex_checkbox.isChecked() if main_window.regex_checkbox else False 
+    
+    main_window.search_manager.find_next(current_table, search_text, use_regex)
 
 def handle_replace(main_window):
-    current_file_data = main_window._get_current_file_data()
+    """Delegate to SearchManager."""
+    if not getattr(main_window, 'search_manager', None): return
+
     current_table = main_window._get_current_table()
+    if not current_table: return
+
     search_text = main_window.search_input.text() if main_window.search_input else ""
     replace_text = main_window.replace_input.text() if main_window.replace_input else ""
-    item_index = main_window._get_current_item_index() 
     use_regex = main_window.regex_checkbox.isChecked() if main_window.regex_checkbox else False 
-
-    if not current_file_data or not current_table or not search_text or item_index < 0:
-        main_window.statusBar().showMessage(tr("replace_enter_text_error"), 3000)
-        return
-
-    if use_regex:
-        try:
-            re.compile(search_text)
-
-        except re.error as e:
-            main_window.statusBar().showMessage(f"Search Regex Error: {e}", 5000)
-            return
-
-    current_items = current_file_data.get('items')
-    current_mode = current_file_data.get('mode')
-    current_lines = current_file_data.get('lines') 
-
-    if not current_items or not current_mode or not (0 <= item_index < len(current_items)):
-        main_window.statusBar().showMessage(tr("replace_data_error"), 3000)
-        return
-
-    item_data = current_items[item_index] 
-    text_key = 'translated_text' if current_mode == "translate" else 'current_text'
-    original_cell_text = item_data.get(text_key, '')
-
-    match_found = table_manager.find_text_in_item(item_data, search_text, current_mode, use_regex=use_regex)
-
-    if match_found:
-
-        try:
-
-            pattern_to_use = search_text if use_regex else re.escape(search_text)
-            new_cell_text, num_subs = re.subn(pattern_to_use, replace_text, original_cell_text, count=1, flags=re.IGNORECASE)
-
-            if num_subs > 0:
-
-                if 'initial_text' not in item_data: 
-                    item_data['initial_text'] = original_cell_text
-                item_data[text_key] = new_cell_text
-                item_data['is_modified_session'] = True
-
-                editable_col_index = 4 
-                table_manager.update_table_item_text(main_window, current_table, item_index, editable_col_index, new_cell_text)
-                table_manager.update_table_row_style(current_table, item_index, item_data)
-
-                if current_mode == "translate":
-                    line_idx = item_data.get('translated_line_index')
-
-                    parsed_data_for_format = item_data.get('parsed_data')
-                    if line_idx is not None and parsed_data_for_format is not None and current_lines and 0 <= line_idx < len(current_lines):
-
-                        new_line = parser.format_line_from_components(item_data, new_cell_text)
-                        if new_line is not None:
-                            current_lines[line_idx] = new_line
-                        else:
-                            logger.warning(f"Could not format line {line_idx} after replace.")
-                            QMessageBox.warning(main_window, tr("replace_format_error_title"),
-                                                tr("replace_format_error_msg", line=line_idx+1))
-
-                    else:
-                        logger.warning(f"Could not update line {line_idx} after replace (missing index or parsed_data).")
-
-                main_window._set_current_tab_modified(True)
-                main_window.statusBar().showMessage(tr("replace_success_finding_next", line=item_index + 1), 2000)
-
-                handle_find_next(main_window)
-
-            else:
-
-                main_window.statusBar().showMessage(tr("replace_failed"), 3000)
-
-        except re.error as e:
-
-             main_window.statusBar().showMessage(tr("replace_regex_error", error=e), 4000)
-             logger.error(f"Regex error during replace: {e}")
-
-    else:
-
-        search_mode_str = "(Regex) " if use_regex else "" 
-        main_window.statusBar().showMessage(f"{search_mode_str}{tr('replace_no_match')}", 2000)
-        handle_find_next(main_window)
+    safe_mode = main_window.search_safe_mode_chk.isChecked() if main_window.search_safe_mode_chk else True
+    
+    main_window.search_manager.replace_current(current_table, search_text, replace_text, use_regex, safe_mode)
 
 def handle_replace_all(main_window):
-    current_file_data = main_window._get_current_file_data()
+    """Delegate to SearchManager."""
+    if not getattr(main_window, 'search_manager', None): return
+
     current_table = main_window._get_current_table()
+    if not current_table: return
+
     search_text = main_window.search_input.text() if main_window.search_input else ""
     replace_text = main_window.replace_input.text() if main_window.replace_input else ""
     use_regex = main_window.regex_checkbox.isChecked() if main_window.regex_checkbox else False 
-
-    if not current_file_data or not current_table or not search_text:
-        main_window.statusBar().showMessage(tr("replace_all_enter_text_error"), 3000)
-        return
-
-    if use_regex:
-        try:
-            re.compile(search_text)
-
-        except re.error as e:
-            main_window.statusBar().showMessage(f"Search Regex Error: {e}", 5000)
-            return
-
-    current_items = current_file_data.get('items')
-    current_mode = current_file_data.get('mode')
-    current_lines = current_file_data.get('lines') 
-
-    if not current_items or not current_mode:
-        main_window.statusBar().showMessage(tr("replace_all_no_data"), 3000)
-        return
-
-    total_replace_count = 0 
-    items_changed_count = 0 
-    errors = []
-
-    search_mode_str = "(Regex) " if use_regex else ""
-    reply = QMessageBox.question(main_window, tr("replace_all_title"),
-                                 tr("replace_all_confirm_msg", search_mode=search_mode_str, search=search_text, replace=replace_text),
-                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                 QMessageBox.StandardButton.No)
-    if reply != QMessageBox.StandardButton.Yes:
-        main_window.statusBar().showMessage(tr("replace_all_canceled"), 3000)
-        return
-
-    main_window.statusBar().showMessage(tr("replace_all_starting"), 0)
-    QApplication.processEvents() 
-
-    for i, item_data in enumerate(current_items):
-        text_key = 'translated_text' if current_mode == "translate" else 'current_text'
-        original_cell_text = item_data.get(text_key, '')
-        item_replace_count = 0 
-
-        if not table_manager.find_text_in_item(item_data, search_text, current_mode, use_regex=use_regex):
-            continue 
-
-        new_cell_text = original_cell_text
-        try:
-
-            pattern_to_use = search_text if use_regex else re.escape(search_text)
-            new_cell_text, num_subs = re.subn(pattern_to_use, replace_text, original_cell_text, flags=re.IGNORECASE)
-            item_replace_count = num_subs
-        except re.error as e:
-            errors.append(tr("replace_all_regex_error", line=i+1, error=e)) 
-            continue 
-
-        if item_replace_count > 0:
-            total_replace_count += item_replace_count
-            items_changed_count += 1
-
-            if 'initial_text' not in item_data: 
-                item_data['initial_text'] = original_cell_text
-            item_data[text_key] = new_cell_text
-            item_data['is_modified_session'] = True
-
-            editable_col_index = 4 
-            table_manager.update_table_item_text(main_window, current_table, i, editable_col_index, new_cell_text)
-            table_manager.update_table_row_style(current_table, i, item_data)
-
-            if current_mode == "translate":
-                line_idx = item_data.get('translated_line_index')
-
-                parsed_data_for_format = item_data.get('parsed_data')
-                if line_idx is not None and parsed_data_for_format is not None and current_lines and 0 <= line_idx < len(current_lines):
-
-                    new_line = parser.format_line_from_components(item_data, new_cell_text)
-                    if new_line is not None:
-                        current_lines[line_idx] = new_line
-                    else:
-                        errors.append(tr("replace_all_format_error", line=i+1, file_line=line_idx+1))
-                else:
-                    errors.append(tr("replace_all_update_error", line=i+1))
-
-    if items_changed_count > 0: 
-        main_window._set_current_tab_modified(True)
-
-    result_message = tr("replace_all_finished", count=total_replace_count, lines=items_changed_count)
-    if errors:
-        result_message += f" {tr('replace_all_errors', count=len(errors))}."
-        QMessageBox.warning(main_window, tr("replace_all_error_title"),
-                            tr("replace_all_error_msg_header") + "\n- " + "\n- ".join(errors[:10]) + ("\n..." if len(errors)>10 else ""))
-
-    main_window.statusBar().showMessage(result_message, 5000)
+    
+    scope = main_window.search_scope_combo.currentData() if main_window.search_scope_combo else "visible"
+    safe_mode = main_window.search_safe_mode_chk.isChecked() if main_window.search_safe_mode_chk else True
+    
+    main_window.search_manager.replace_all(current_table, search_text, replace_text, use_regex, scope, safe_mode)
