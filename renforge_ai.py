@@ -357,7 +357,21 @@ def translate_text_batch_gemini_strict(
             break
         
         chunk_start = time.time()
-        chunk_result = _translate_chunk(chunk, source_lang, target_lang, glossary)
+        try:
+            chunk_result = _translate_chunk(chunk, source_lang, target_lang, glossary)
+        except Exception as e:
+            # Catch APIKeyError and other critical errors from _translate_chunk
+            from renforge_exceptions import APIKeyError
+            if isinstance(e, APIKeyError):
+                logger.critical(f"[translate_batch_strict] Critical API Error stopped batch: {e}")
+                result["errors"].append({"i": -1, "error": f"CRITICAL STOP: {str(e)}"})
+                # Mark remaining items as failed/skipped
+                remaining_chunks = chunks[chunk_idx:]
+                skipped_count = sum(len(c) for c in remaining_chunks)
+                result["stats"]["failed"] += skipped_count
+                break
+            raise e # Re-raise other unexpected errors logic
+            
         chunk_time = time.time() - chunk_start
         
         # Merge results
@@ -508,6 +522,13 @@ Your failed response started with: {last_response[:200] if last_response else 'N
         response_text, error = _call_gemini_with_backoff(prompt, json_mode=True)
         
         if error:
+            # CHECK FOR CRITICAL ERRORS that should stop execution immediately
+            if "403" in error or "key" in error.lower() or "permission" in error.lower():
+                if "leaked" in error.lower() or "expired" in error.lower() or "invalid" in error.lower():
+                    logger.critical(f"[translate_chunk] CRITICAL API ERROR: {error} - Aborting batch.")
+                    from renforge_exceptions import APIKeyError
+                    raise APIKeyError(f"API Key Error: {error}")
+            
             last_error = error
             logger.warning(f"[translate_chunk] API error on attempt {attempt+1}: {error}")
             continue
