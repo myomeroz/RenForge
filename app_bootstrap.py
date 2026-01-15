@@ -11,6 +11,7 @@ It creates and wires all the main components:
 """
 
 from typing import Tuple
+import os
 
 from renforge_logger import get_logger
 import renforge_ai as ai
@@ -102,17 +103,38 @@ def bootstrap() -> Tuple[AppController, 'RenForgeGUI']:
     container.register_instance(IAppController, app_controller)
     logger.debug("  - Registered IAppController -> AppController with injected deps")
     
+# =========================================================================
+    # CREATE VIEW - FluentWindow (default) or Legacy RenForgeGUI (fallback)
     # =========================================================================
-    # CREATE VIEW (RenForgeGUI)
-    # =========================================================================
-    logger.debug("Creating view (RenForgeGUI)...")
     
-    # Import here to avoid circular imports
-    from gui.renforge_gui import RenForgeGUI
+    # Configuration flag - set to False to use legacy UI
+    USE_FLUENT_UI = True
+    # Fail-fast toggle: if set, we DO NOT fall back silently.
+    # Usage (Windows PowerShell):  $env:RENFORGE_FORCE_FLUENT = "1"; python main.py
+    FORCE_FLUENT_UI = os.getenv("RENFORGE_FORCE_FLUENT", "0") == "1"
     
-    view = RenForgeGUI()
+    if USE_FLUENT_UI:
+        logger.debug("Creating view (MainFluentWindow - Fluent UI)...")
+        try:
+            from gui.windows.main_fluent_window import MainFluentWindow
+            view = MainFluentWindow()
+            logger.debug("  - Created MainFluentWindow as IMainView")
+        except Exception as e:
+            logger.exception(f"Failed to create FluentWindow: {e}")
+            if FORCE_FLUENT_UI:
+                # Fail fast so the root cause is fixed instead of silently hiding it.
+                raise
+            logger.warning("Falling back to legacy RenForgeGUI...")
+            from gui.renforge_gui import RenForgeGUI
+            view = RenForgeGUI()
+            logger.debug("  - Created RenForgeGUI as IMainView (fallback)")
+    else:
+        logger.debug("Creating view (RenForgeGUI - Legacy UI)...")
+        from gui.renforge_gui import RenForgeGUI
+        view = RenForgeGUI()
+        logger.debug("  - Created and registered RenForgeGUI as IMainView")
+    
     container.register_instance(IMainView, view)
-    logger.debug("  - Created and registered RenForgeGUI as IMainView")
     
     # =========================================================================
     # REGISTER GUI CONTROLLERS (need view reference)
@@ -131,6 +153,40 @@ def bootstrap() -> Tuple[AppController, 'RenForgeGUI']:
     view.project_controller = project_controller  # Assign to view
     logger.debug("  - Registered IProjectController -> ProjectController instance")
     
+    # Wire BatchController status updates to Inspector (FluentWindow only)
+    if hasattr(view, 'inspector') and view.inspector:
+        batch_controller.batch_status_updated.connect(view.inspector.show_batch_status)
+        logger.debug("  - Wired batch_status_updated -> inspector.show_batch_status")
+        
+        # Wire cancel request from inspector to batch controller
+        if hasattr(view.inspector, 'cancel_batch_requested'):
+            view.inspector.cancel_batch_requested.connect(batch_controller.cancel)
+            logger.debug("  - Wired inspector.cancel_batch_requested -> batch_controller.cancel")
+    
+    # Wire batch status to TranslatePage for button enable/disable
+    # Use dedicated batch_running_changed signal (more reliable than lambda with dict)
+    if hasattr(view, 'translate_page') and view.translate_page:
+        batch_controller.batch_running_changed.connect(
+            view.translate_page.set_batch_running
+        )
+        logger.debug("  - Wired batch_running_changed -> translate_page.set_batch_running")
+        
+        # Wire batch status to MiniBatchBar (same source as Inspector)
+        if hasattr(view.translate_page, 'mini_batch_bar'):
+            batch_controller.batch_status_updated.connect(
+                view.translate_page.mini_batch_bar.show_batch_status
+            )
+            logger.debug("  - Wired batch_status_updated -> mini_batch_bar.show_batch_status")
+            
+            # Wire MiniBatchBar navigation buttons to Inspector
+            view.translate_page.mini_batch_bar.detail_clicked.connect(
+                lambda: _show_inspector_tab(view, 1)  # Toplu tab index
+            )
+            view.translate_page.mini_batch_bar.log_clicked.connect(
+                lambda: _show_inspector_tab(view, 2)  # Log tab index
+            )
+            logger.debug("  - Wired mini_batch_bar detail_clicked/log_clicked -> inspector")
+    
     # =========================================================================
     # WIRE SIGNALS (View -> Controller, Controller -> View)
     # =========================================================================
@@ -144,6 +200,18 @@ def bootstrap() -> Tuple[AppController, 'RenForgeGUI']:
     # =========================================================================
     view._app_controller = app_controller
     logger.debug("  - Stored AppController reference in view")
+    
+    # =========================================================================
+    # INSTALL INSPECTOR LOG BRIDGE
+    # =========================================================================
+    if hasattr(view, 'inspector') and view.inspector:
+        from gui.logging.inspector_log_handler import install_inspector_log_handler
+        emitter, handler = install_inspector_log_handler(view.inspector)
+        if handler:
+            # Store references for potential cleanup
+            view._log_emitter = emitter
+            view._log_handler = handler
+            logger.debug("  - Inspector log bridge installed")
     
     logger.info("=== RenForge Bootstrap Complete ===")
     logger.info(f"  Registrations: {container.get_registrations()}")
@@ -215,6 +283,12 @@ def _wire_view_to_controller_signals(view: 'RenForgeGUI', controller: AppControl
         lambda: _handle_save(view)
     )
     logger.debug("    - save_requested -> _handle_save")
+    
+    # Save As - delegate to legacy file_manager
+    view.save_as_requested.connect(
+        lambda: _handle_save_as(view)
+    )
+    logger.debug("    - save_as_requested -> _handle_save_as")
     
     # Save All - delegate to legacy file_manager
     view.save_all_requested.connect(
@@ -302,22 +376,45 @@ def _on_file_opened_from_controller(view: 'RenForgeGUI', parsed_file):
     Handle file opened signal from controller.
     
     Bu fonksiyon dosya açıldığında UI oluşturur.
-    YENİ: Model-View mimarisi kullanılıyor - UI donması yok!
-    
-    PERFORMANS:
-    - Eski: QTableWidget + 11,500 item oluşturma = UI donması
-    - Yeni: QTableView + Model = Virtual scrolling, sadece ~30 satır render
+    YENİ: FluentWindow için multi-tab desteği!
     """
     logger.info(f"Controller opened file: {parsed_file.filename}, mode: {parsed_file.mode}")
     
+    file_path = str(parsed_file.file_path)
+    
+    # =========================================================================
+    # FLUENT WINDOW: Use new multi-file tab system
+    # =========================================================================
+    if hasattr(view, 'open_or_focus_file'):
+        # Modern FluentWindow with multi-file support
+        success = view.open_or_focus_file(file_path, parsed_file)
+        
+        # Sync with ProjectModel
+        try:
+            project_model = view._app_controller.project
+            project_model.add_file(parsed_file)
+            project_model.set_active_file(file_path)
+            logger.debug(f"  Synced to project_model: {file_path}")
+        except Exception as e:
+            logger.warning(f"  Failed to sync to project_model: {e}")
+        
+        # Update UI state
+        if hasattr(view, '_update_language_model_display'):
+            view._update_language_model_display()
+        if hasattr(view, '_update_ui_state'):
+            view._update_ui_state()
+        
+        logger.info(f"  FluentWindow: File opened via open_or_focus_file: {parsed_file.filename}")
+        return
+    
+    # =========================================================================
+    # LEGACY PATH: Old RenForgeGUI with tab_widget
+    # =========================================================================
     # Import legacy managers for UI creation
     import gui.gui_tab_manager as tab_manager
-    
-    # YENİ: Model-View mimarisi kullanıyoruz
     from gui.views import file_table_view
     
     # Check if file is already open
-    file_path = str(parsed_file.file_path)
     if file_path in view.file_data:
         # File already open - just switch to its tab
         for idx in range(view.tab_widget.count()):
@@ -330,9 +427,7 @@ def _on_file_opened_from_controller(view: 'RenForgeGUI', parsed_file):
     view.file_data[file_path] = parsed_file
     view.current_file_path = file_path
     
-    # =============================================
     # SYNC WITH PROJECT_MODEL (PR-3)
-    # =============================================
     try:
         project_model = view._app_controller.project
         project_model.add_file(parsed_file)
@@ -341,18 +436,9 @@ def _on_file_opened_from_controller(view: 'RenForgeGUI', parsed_file):
     except Exception as e:
         logger.warning(f"  Failed to sync to project_model: {e}")
     
-    # =============================================
-    # YENİ: MODEL-VIEW MİMARİSİ İLE TABLO OLUŞTUR
-    # =============================================
-    
-    # Yeni TranslationTableView oluştur (QTableWidget yerine!)
+    # Create table view
     table_view = file_table_view.create_table_view(view)
     table_view.setProperty("filePath", file_path)
-    
-    # Veriyi modele yükle (populate_table yerine!)
-    # Bu çağrı artık DONMA YAPMAZ çünkü:
-    # 1. Model sadece list referansı tutuyor
-    # 2. View sadece görünen satırları render ediyor
     file_table_view.load_data_to_view(table_view, parsed_file)
     
     # Add tab
@@ -363,6 +449,11 @@ def _on_file_opened_from_controller(view: 'RenForgeGUI', parsed_file):
     # Update UI state
     view._update_language_model_display()
     view._update_ui_state()
+    
+    # FluentWindow: Also populate page tables with model
+    if hasattr(view, 'load_file_to_pages'):
+        view.load_file_to_pages(parsed_file)
+        logger.debug("  Called load_file_to_pages for Fluent UI pages")
     
     logger.info(f"  File UI created successfully: {parsed_file.filename}")
 
@@ -422,9 +513,31 @@ def _on_tab_changed(controller: AppController, view: 'RenForgeGUI', idx: int):
             logger.warning(f"  Failed to sync active file: {e}")
 
 
+def _show_inspector_tab(view: 'RenForgeGUI', tab_index: int):
+    """
+    Show/focus Inspector panel and switch to specified tab.
+    
+    Used by MiniBatchBar navigation buttons.
+    
+    Args:
+        view: Main window instance
+        tab_index: Tab index (0=Satır, 1=Toplu, 2=Log)
+    """
+    if hasattr(view, 'inspector') and view.inspector:
+        # Ensure inspector is visible
+        if not view.inspector.isVisible():
+            view.inspector.setVisible(True)
+        
+        # Switch to requested tab
+        if hasattr(view.inspector, 'tabs'):
+            view.inspector.tabs.setCurrentIndex(tab_index)
+        
+        logger.debug(f"Inspector shown, tab switched to index {tab_index}")
+
+
 def _show_error_from_controller(view: 'RenForgeGUI', message: str):
     """Show error dialog from controller signal."""
-    from PyQt6.QtWidgets import QMessageBox
+    from PySide6.QtWidgets import QMessageBox
     QMessageBox.critical(view, "Error", message)
 
 
@@ -463,6 +576,16 @@ def _handle_save(view: 'RenForgeGUI'):
     import gui.gui_file_manager as file_manager
     logger.debug("_handle_save called via signal")
     file_manager.save_changes(view)
+
+
+def _handle_save_as(view: 'RenForgeGUI'):
+    """
+    Handle save as request from view signal.
+    Delegates to legacy file_manager for actual save dialog.
+    """
+    import gui.gui_file_manager as file_manager
+    logger.debug("_handle_save_as called via signal")
+    file_manager.save_file_dialog(view)
 
 
 def _handle_save_all(view: 'RenForgeGUI'):
@@ -508,13 +631,14 @@ def _handle_open_file(view: 'RenForgeGUI'):
     file_manager.open_file_dialog(view)
 
 
-def _handle_open_project(view: 'RenForgeGUI'):
+def _handle_open_project(view):
     """
     Handle open project request from view signal.
-    Delegates to legacy handler in view.
+    Uses file_manager directly (works for both FluentWindow and legacy GUI).
     """
+    import gui.gui_file_manager as file_manager
     logger.debug("_handle_open_project called via signal")
-    view._handle_open_project()
+    file_manager.open_project_dialog(view)
 
 
 def _handle_translate_ai(view: 'RenForgeGUI'):
