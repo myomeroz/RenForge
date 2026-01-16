@@ -25,3 +25,8 @@ wheels/
 .vscode/
 .idea/
 *.log
+*.zip
+*.bak
+.agent/
+.venv/
+__pycache__/
