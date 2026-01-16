@@ -292,6 +292,39 @@ class ParsedFile:
             self.is_modified = True
             self._notify('items_updated', [index])
             return True
+            return True
+        return False
+    
+    def set_item_error(self, index: int, message: str) -> bool:
+        """
+        Mark an item as having an error.
+        
+        Args:
+            index: Item index
+            message: Error message
+            
+        Returns:
+            True if successful
+        """
+        item = self.get_item(index)
+        if item:
+            item.batch_marker = "AI_FAIL"
+            item.batch_tooltip = message
+            # Notify so model can update status to ERROR
+            self._notify('items_updated', [index])
+            return True
+        return False
+
+    def clear_item_error(self, index: int) -> bool:
+        """
+        Clear error marker from an item.
+        """
+        item = self.get_item(index)
+        if item and item.batch_marker == "AI_FAIL":
+            item.batch_marker = None
+            item.batch_tooltip = None
+            self._notify('items_updated', [index])
+            return True
         return False
     
     def get_modified_items(self) -> List[int]:

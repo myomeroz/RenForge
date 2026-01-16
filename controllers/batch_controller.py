@@ -248,6 +248,29 @@ class BatchController(QObject):
         # Clear active worker reference
         self._active_worker = None
         
+        # SYNC TO MODEL: Set errors for failed items
+        # We access structured_errors from the results or self._structured_errors
+        # The results dict passed here might contain them, or we use the controller's property logic if results is incomplete
+        # Usually results contains 'structured_errors' if we merged them correctly in worker/controller
+        # But BatchController accumulates them in self._structured_errors via direct append or from signals?
+        # Actually TranslationController emits finished with results.
+        # Let's use results.get('structured_errors') or self._structured_errors? 
+        # self.structured_errors property returns self._structured_errors.
+        # Let's try results first, then fallback.
+        
+        errs = results.get('structured_errors', [])
+        if not errs and hasattr(self, '_structured_errors'):
+             errs = self._structured_errors
+             
+        if errs:
+            current_file = self.main._get_current_file_data()
+            if current_file:
+                for error in errs:
+                    idx = error.get('row_id')
+                    msg = error.get('message', 'Error')
+                    if idx is not None:
+                        current_file.set_item_error(idx, msg)
+        
         # Keep cancelled flag for status display, then reset
         final_stage = "canceled" if was_canceled else "completed"
         
@@ -634,6 +657,9 @@ class BatchController(QObject):
         original_item_data.current_text = translated_text
         original_item_data.is_modified_session = True
         current_file_data.is_modified = True
+        
+        # Clear error on success
+        current_file_data.clear_item_error(item_index)
         
         # Track single item success
         self._total_processed += 1

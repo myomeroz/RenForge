@@ -128,7 +128,7 @@ class TranslatePage(QWidget):
 
     def _setup_settings_bar(self):
         """Setup the general settings bar (Mode, Languages, Model)."""
-        from qfluentwidgets import CardWidget, BodyLabel, ComboBox, FluentIcon
+        from qfluentwidgets import CardWidget, BodyLabel, ComboBox, FluentIcon, CheckBox, CheckBox
         
         self.settings_card = CardWidget()
         self.settings_card.setFixedHeight(56)  # Daha kompakt
@@ -210,6 +210,13 @@ class TranslatePage(QWidget):
         self.source_lang_combo.currentIndexChanged.connect(self._on_source_lang_changed)
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
         
+        # Errors Only Toggle (Stage 5.5)
+        self.errors_only_chk = CheckBox("Sadece Hatalılar")
+        self.errors_only_chk.stateChanged.connect(self._on_errors_only_toggled)
+        layout.addWidget(self.errors_only_chk)
+        
+        layout.addStretch()
+        
         # Emit initial signals to sync state
         QTimer.singleShot(0, lambda: self._on_target_lang_changed())
         QTimer.singleShot(0, lambda: self._on_source_lang_changed())
@@ -234,6 +241,17 @@ class TranslatePage(QWidget):
         if text:
             self.window().model_changed.emit(text)
             logger.debug(f"Emitted model_changed: {text}")
+
+    def _on_errors_only_toggled(self, state):
+        """Handle errors only toggle."""
+        # CheckBox state: 0=Unchecked, 2=Checked.
+        is_checked = (state == 2)
+        target_filter = "error" if is_checked else "all"
+        
+        # We need to set this on the SharedTableView's filter logic
+        if hasattr(self, 'table_widget') and hasattr(self.table_widget, 'filter_segment'):
+            # This updates the segmented widget (Top Bar) -> triggers its signal -> updates proxy
+            self.table_widget.filter_segment.setCurrentItem(target_filter)
 
     def _update_engine_ui(self):
         """Update dropdown text and icon based on selected engine."""
