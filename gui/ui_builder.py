@@ -8,13 +8,13 @@ import os
 from renforge_logger import get_logger
 logger = get_logger("gui.ui_builder")
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QLineEdit, QTabWidget, QGroupBox, QCheckBox, QSplitter, QSizePolicy,
     QToolButton, QStackedLayout, QTreeView, QMessageBox
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QIcon
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 
 import renforge_config as config
 from locales import tr

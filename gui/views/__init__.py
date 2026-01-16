@@ -13,8 +13,5 @@ from gui.views.batch_status_view import (
 )
 
 from gui.views.file_table_view import (
-    resolve_table_widget,
-    get_selected_indices,
-    update_row_text,
-    update_row_style
+    resolve_table_widget
 )

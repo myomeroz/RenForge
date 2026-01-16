@@ -21,11 +21,11 @@ logger = get_logger("gui.file_manager")
 
 try:
 
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox, QApplication
-    from PyQt6.QtCore import Qt
+    from PySide6.QtWidgets import QFileDialog, QMessageBox, QApplication
+    from PySide6.QtCore import Qt
 except ImportError:
 
-    logger.critical("PyQt6 is required for file operations but not found.")
+    logger.critical("PySide6 is required for file operations but not found.")
 
     sys.exit(1)
 
@@ -317,7 +317,7 @@ def save_changes(main_window):
                     # TranslationTableView için model zaten stili yönetiyor
                     # Sadece modeli güncellememiz gerekiyor
                     from gui.views.translation_table_view import TranslationTableView
-                    from PyQt6.QtWidgets import QTableWidget
+                    from PySide6.QtWidgets import QTableWidget
                     
                     if isinstance(current_table, TranslationTableView):
                         # Yeni Model-View: Model'e is_modified değişikliklerini bildir

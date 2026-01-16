@@ -1,11 +1,11 @@
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
     QTableWidget, QTableWidgetItem, QHeaderView, QPushButton,
     QFormLayout, QDialog, QLineEdit, QCheckBox, QScrollArea,
     QGroupBox
 )
-from PyQt6.QtCore import Qt
+from PySide6.QtCore import Qt
 from core.plugin_manager import PluginManager
 from renforge_logger import get_logger
 from locales import tr
@@ -179,7 +179,7 @@ class PluginSettingsWidget(QWidget):
             self.failed_group.setVisible(False)
             
     def _run_test(self):
-        from PyQt6.QtWidgets import QMessageBox
+        from PySide6.QtWidgets import QMessageBox
         # Test active engine
         engine_id = self.engine_combo.currentData()
         if not engine_id: 

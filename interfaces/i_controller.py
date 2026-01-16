@@ -6,7 +6,7 @@ Protocol definitions for Controller layer components.
 """
 
 from typing import Protocol, Optional, List, Dict, Any, Callable, runtime_checkable
-from PyQt6.QtCore import pyqtSignal
+from PySide6.QtCore import Signal
 
 
 @runtime_checkable
@@ -18,10 +18,10 @@ class IFileController(Protocol):
     """
     
     # Signals
-    file_opened: pyqtSignal
-    file_saved: pyqtSignal
-    file_closed: pyqtSignal
-    file_error: pyqtSignal
+    file_opened: Signal
+    file_saved: Signal
+    file_closed: Signal
+    file_error: Signal
     
     # Methods
     def open_file(
@@ -59,11 +59,11 @@ class ITranslationController(Protocol):
     """
     
     # Signals
-    translation_started: pyqtSignal
-    translation_progress: pyqtSignal
-    translation_completed: pyqtSignal
-    translation_error: pyqtSignal
-    item_translated: pyqtSignal
+    translation_started: Signal
+    translation_progress: Signal
+    translation_completed: Signal
+    translation_error: Signal
+    item_translated: Signal
     
     # Properties
     @property
@@ -133,10 +133,10 @@ class IAppController(Protocol):
     """
     
     # Signals
-    app_ready: pyqtSignal
-    models_loaded: pyqtSignal
-    languages_loaded: pyqtSignal
-    status_updated: pyqtSignal
+    app_ready: Signal
+    models_loaded: Signal
+    languages_loaded: Signal
+    status_updated: Signal
     
     # Properties
     @property

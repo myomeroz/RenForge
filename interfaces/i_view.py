@@ -7,8 +7,8 @@ These protocols define the contract that views must fulfill.
 """
 
 from typing import Protocol, Optional, Dict, List, Any, runtime_checkable
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QWidget
 
 
 @runtime_checkable
@@ -25,27 +25,27 @@ class IMainView(Protocol):
     # =========================================================================
     
     # File operations
-    open_project_requested: pyqtSignal
-    open_file_requested: pyqtSignal
-    save_requested: pyqtSignal
-    save_all_requested: pyqtSignal
-    close_tab_requested: pyqtSignal
-    exit_requested: pyqtSignal
+    open_project_requested: Signal
+    open_file_requested: Signal
+    save_requested: Signal
+    save_all_requested: Signal
+    close_tab_requested: Signal
+    exit_requested: Signal
     
     # Navigation
-    tab_changed: pyqtSignal
-    item_selected: pyqtSignal
+    tab_changed: Signal
+    item_selected: Signal
     
     # Translation
-    translate_google_requested: pyqtSignal
-    translate_ai_requested: pyqtSignal
-    batch_google_requested: pyqtSignal
-    batch_ai_requested: pyqtSignal
+    translate_google_requested: Signal
+    translate_ai_requested: Signal
+    batch_google_requested: Signal
+    batch_ai_requested: Signal
     
     # Settings
-    target_language_changed: pyqtSignal
-    source_language_changed: pyqtSignal
-    model_changed: pyqtSignal
+    target_language_changed: Signal
+    source_language_changed: Signal
+    model_changed: Signal
     
     # =========================================================================
     # METHODS
@@ -125,8 +125,8 @@ class ITableView(Protocol):
     """
     
     # Signals
-    item_selected: pyqtSignal
-    cell_edited: pyqtSignal
+    item_selected: Signal
+    cell_edited: Signal
     
     # Methods
     def get_selected_rows(self) -> List[int]:

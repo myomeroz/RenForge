@@ -1,5 +1,5 @@
 import pytest
-from PyQt6.QtWidgets import QTableWidget
+from PySide6.QtWidgets import QTableWidget
 from models.parsed_file import ParsedFile
 from renforge_enums import FileMode
 

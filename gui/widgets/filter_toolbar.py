@@ -5,10 +5,10 @@ RenForge Filter Toolbar
 Toolbar widget for filtering table rows by batch markers.
 """
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QComboBox, QPushButton, QLabel
 )
-from PyQt6.QtCore import pyqtSignal
+from PySide6.QtCore import Signal
 
 from renforge_logger import get_logger
 from locales import tr
@@ -27,7 +27,7 @@ class FilterToolbar(QWidget):
     - Changed: Show only rows with modified text
     """
     
-    filter_changed = pyqtSignal(str)  # Emits filter type when changed
+    filter_changed = Signal(str)  # Emits filter type when changed
     
     FILTER_ALL = "all"
     FILTER_AI_FAIL = "ai_fail"

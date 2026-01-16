@@ -6,10 +6,10 @@ from renforge_logger import get_logger
 from renforge_localization import tr
 
 try:
-    from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
+    from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                                QLineEdit, QCheckBox, QComboBox, QFileDialog, QProgressBar, 
                                QGroupBox, QTextEdit, QMessageBox)
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal
+    from PySide6.QtCore import Qt, QThread, Signal
 except ImportError:
     pass
 
@@ -24,7 +24,7 @@ class ExportRequest:
         self.password = password
 
 class ExportWorker(QThread):
-    finished = pyqtSignal(bool, str) # success, message
+    finished = Signal(bool, str) # success, message
     
     def __init__(self, request: ExportRequest):
         super().__init__()
@@ -39,7 +39,7 @@ class ExportWorker(QThread):
             self.finished.emit(False, str(e))
 
 class ImportWorker(QThread):
-    finished = pyqtSignal(list, str) # report, error
+    finished = Signal(list, str) # report, error
     
     def __init__(self, path, strategies, password):
         super().__init__()

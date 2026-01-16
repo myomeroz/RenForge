@@ -1,10 +1,10 @@
 
 import re
 from typing import Optional, Tuple, List, Dict, Any
-from PyQt6.QtWidgets import QTableView, QMessageBox
-from PyQt6.QtCore import Qt, QAbstractItemModel, QModelIndex
-from PyQt6.QtWidgets import QTableView, QMessageBox, QApplication
-from PyQt6.QtCore import Qt, QAbstractItemModel, QModelIndex, QObject
+from PySide6.QtWidgets import QTableView, QMessageBox
+from PySide6.QtCore import Qt, QAbstractItemModel, QModelIndex
+from PySide6.QtWidgets import QTableView, QMessageBox, QApplication
+from PySide6.QtCore import Qt, QAbstractItemModel, QModelIndex, QObject
 from renforge_logger import get_logger
 from core.text_utils import mask_renpy_tokens, unmask_renpy_tokens
 import locales

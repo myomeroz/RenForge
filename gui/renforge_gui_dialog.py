@@ -5,15 +5,26 @@ from renforge_logger import get_logger
 logger = get_logger("gui.dialog")
 
 try:
-    from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
+    from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
                               QLineEdit, QMessageBox, QDialogButtonBox, QGroupBox,
                               QRadioButton, QGridLayout, QApplication, QSizePolicy, QSplitter,
                               QComboBox, QCheckBox, QTabWidget, QWidget, QScrollArea, QFormLayout) 
-    from PyQt6.QtCore import Qt, QTimer
-    from PyQt6.QtGui import QFont
+    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtGui import QFont
 except ImportError:
-     logger.critical("PyQt6 is required for GUI dialogs but not found.")
+     logger.critical("PySide6 is required for GUI dialogs but not found.")
      raise 
+
+# QFluentWidgets imports for Fluent-style buttons
+try:
+    from qfluentwidgets import (
+        PrimaryPushButton, PushButton as FluentPushButton, 
+        TransparentPushButton, isDarkTheme, InfoBar, InfoBarPosition
+    )
+    FLUENT_AVAILABLE = True
+except ImportError:
+    FLUENT_AVAILABLE = False
+    logger.warning("qfluentwidgets not available, falling back to standard Qt buttons")
 
 try:
     import renforge_config as config
@@ -32,6 +43,130 @@ try:
 except ImportError as e:
      logger.critical(f"Failed to import renforge modules in dialogs: {e}")
      raise
+
+# =============================================================================
+# FLUENT DARK THEME STYLE (consistent with main UI)
+# =============================================================================
+FLUENT_DIALOG_STYLE = """
+QDialog {
+    background-color: #202020;
+    color: #ffffff;
+    border-radius: 8px;
+}
+QGroupBox {
+    font-weight: bold;
+    border: 1px solid #3d3d3d;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding-top: 10px;
+    background-color: #2b2b2b;
+    color: #ffffff;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+    color: #ffffff;
+}
+QLabel {
+    color: #ffffff;
+}
+QTextEdit, QLineEdit {
+    background-color: #1e1e1e;
+    border: 1px solid #3d3d3d;
+    border-radius: 4px;
+    padding: 6px;
+    color: #ffffff;
+    selection-background-color: #0078d4;
+}
+QTextEdit:focus, QLineEdit:focus {
+    border: 1px solid #0078d4;
+}
+QPushButton {
+    background-color: #3d3d3d;
+    border: 1px solid #4d4d4d;
+    border-radius: 4px;
+    padding: 8px 16px;
+    color: #ffffff;
+    min-height: 28px;
+}
+QPushButton:hover {
+    background-color: #4d4d4d;
+    border-color: #5d5d5d;
+}
+QPushButton:pressed {
+    background-color: #2d2d2d;
+}
+QPushButton:disabled {
+    background-color: #2d2d2d;
+    color: #808080;
+}
+QDialogButtonBox QPushButton {
+    min-width: 80px;
+}
+QSplitter::handle {
+    background-color: #3d3d3d;
+}
+QSplitter::handle:hover {
+    background-color: #0078d4;
+}
+QComboBox {
+    background-color: #3d3d3d;
+    border: 1px solid #4d4d4d;
+    border-radius: 4px;
+    padding: 6px 12px;
+    color: #ffffff;
+}
+QComboBox:hover {
+    border-color: #0078d4;
+}
+QComboBox::drop-down {
+    border: none;
+    padding-right: 8px;
+}
+QComboBox QAbstractItemView {
+    background-color: #2b2b2b;
+    border: 1px solid #3d3d3d;
+    selection-background-color: #0078d4;
+    color: #ffffff;
+}
+QCheckBox, QRadioButton {
+    color: #ffffff;
+    spacing: 8px;
+}
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 18px;
+    height: 18px;
+}
+QTabWidget::pane {
+    border: 1px solid #3d3d3d;
+    background-color: #2b2b2b;
+    border-radius: 4px;
+}
+QTabBar::tab {
+    background-color: #3d3d3d;
+    color: #ffffff;
+    padding: 8px 16px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+QTabBar::tab:selected {
+    background-color: #0078d4;
+}
+QTabBar::tab:hover:!selected {
+    background-color: #4d4d4d;
+}
+QScrollArea {
+    background: transparent;
+    border: none;
+}
+"""
+
+def apply_fluent_style(dialog: QDialog):
+    """Apply Fluent dark theme style to a dialog."""
+    dialog.setStyleSheet(FLUENT_DIALOG_STYLE)
+
+
 
 class AIEditDialog(QDialog):
 
@@ -60,6 +195,9 @@ class AIEditDialog(QDialog):
 
         self.setWindowTitle(tr("dialog_ai_edit"))
         self.setMinimumSize(800, 600)
+        
+        # Apply Fluent dark theme
+        apply_fluent_style(self)
 
         layout = QVBoxLayout(self)
 
@@ -283,6 +421,9 @@ class GoogleTranslateDialog(QDialog):
 
         self.setWindowTitle(tr("dialog_google_translate"))
         self.setMinimumSize(700, 500)
+        
+        # Apply Fluent dark theme
+        apply_fluent_style(self)
 
         layout = QVBoxLayout(self)
 
@@ -292,8 +433,16 @@ class GoogleTranslateDialog(QDialog):
         settings_group = QGroupBox("Translation Settings (from main window)")
         settings_layout = QGridLayout(settings_group)
 
-        self.source_code = self.current_file_data.source_language or config.DEFAULT_SOURCE_LANG
-        self.target_code = self.current_file_data.target_language or config.DEFAULT_TARGET_LANG
+        # Get language codes from parent window's helper methods (most reliable)
+        if hasattr(parent, 'get_current_source_code'):
+            self.source_code = parent.get_current_source_code()
+        else:
+            self.source_code = self.current_file_data.source_language or config.DEFAULT_SOURCE_LANG
+        
+        if hasattr(parent, 'get_current_target_code'):
+            self.target_code = parent.get_current_target_code()
+        else:
+            self.target_code = self.current_file_data.target_language or config.DEFAULT_TARGET_LANG
 
         all_languages = parent.google_languages if hasattr(parent, 'google_languages') else {}
         source_lang_name = all_languages.get(self.source_code, self.source_code) 
@@ -485,6 +634,9 @@ class ApiKeyDialog(QDialog):
 
         self.setWindowTitle(tr("dialog_api_key"))
         self.setMinimumWidth(450)
+        
+        # Apply Fluent dark theme
+        apply_fluent_style(self)
 
         layout = QVBoxLayout(self)
 
@@ -592,6 +744,9 @@ class ModeSelectionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr("dialog_mode_select"))
         self.setMinimumWidth(400)
+        
+        # Apply Fluent dark theme
+        apply_fluent_style(self)
 
         self.selected_mode = initial_mode 
 
@@ -643,6 +798,9 @@ class InsertLineDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr("dialog_insert_line"))
         self.setMinimumWidth(500)
+        
+        # Apply Fluent dark theme
+        apply_fluent_style(self)
 
         layout = QVBoxLayout(self)
 
@@ -682,6 +840,9 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr("dialog_main_settings"))
         self.setMinimumWidth(500) 
+        
+        # Apply Fluent dark theme
+        apply_fluent_style(self) 
 
         self.settings = parent.settings if parent else load_settings()
         self.current_mode_method = self.settings.get("mode_selection_method", config.DEFAULT_MODE_SELECTION_METHOD)

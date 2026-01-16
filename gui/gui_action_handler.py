@@ -8,11 +8,11 @@ logger = get_logger("gui.action_handler")
 
 try:
 
-    from PyQt6.QtWidgets import (QMessageBox, QProgressDialog, QDialog,
+    from PySide6.QtWidgets import (QMessageBox, QProgressDialog, QDialog,
                                  QAbstractItemView, QApplication)
-    from PyQt6.QtCore import (Qt, QObject, pyqtSignal, QRunnable, QThreadPool, pyqtSlot)
+    from PySide6.QtCore import (Qt, QObject, Signal, QRunnable, QThreadPool, Slot)
 except ImportError:
-    logger.critical("PyQt6 is required for action handling but not found.")
+    logger.critical("PySide6 is required for action handling but not found.")
     sys.exit(1)
 
 import renforge_config as config
@@ -72,24 +72,33 @@ def edit_with_ai(main_window):
 
     dialog = AIEditDialog(main_window, item_index, current_mode)
     if dialog.exec() == QDialog.DialogCode.Accepted:
-
-        updated_items = main_window._get_current_translatable_items() 
-        edited_item_index = dialog.item_index 
-
-        if updated_items and 0 <= edited_item_index < len(updated_items):
-            edited_item = updated_items[edited_item_index]
-            # text_key logic removed
-            edited_text = edited_item.current_text or ''
-
-            table_manager.update_table_item_text(main_window, table_widget, edited_item_index, 4, edited_text)
-
-            table_manager.update_table_row_style(table_widget, edited_item_index, edited_item)
-
-            main_window._set_current_tab_modified(True)
-            main_window.statusBar().showMessage(tr("edit_ai_success", item=edited_item_index + 1), 3000)
+        # Get the refined text from dialog result
+        edited_text = dialog.result_text.toPlainText() if hasattr(dialog, 'result_text') else ''
+        edited_item_index = dialog.item_index
+        
+        if edited_text and not edited_text.startswith("Gemini could not"):
+            # Try FluentWindow's model-based update first
+            if hasattr(main_window, 'update_row_translation'):
+                success = main_window.update_row_translation(edited_item_index, edited_text)
+                if success:
+                    main_window._set_current_tab_modified(True)
+                    main_window.statusBar().showMessage(tr("edit_ai_success", item=edited_item_index + 1), 3000)
+                    logger.info(f"[edit_with_ai] Applied AI edit to row {edited_item_index}")
+                    return
+            
+            # Fallback to legacy table_manager for old GUI
+            updated_items = main_window._get_current_translatable_items()
+            if updated_items and 0 <= edited_item_index < len(updated_items):
+                edited_item = updated_items[edited_item_index]
+                table_manager.update_table_item_text(main_window, table_widget, edited_item_index, 4, edited_text)
+                table_manager.update_table_row_style(table_widget, edited_item_index, edited_item)
+                main_window._set_current_tab_modified(True)
+                main_window.statusBar().showMessage(tr("edit_ai_success", item=edited_item_index + 1), 3000)
+            else:
+                logger.error(f"Could not retrieve updated item data after AI edit for index {edited_item_index}")
+                main_window.statusBar().showMessage(tr("edit_ai_update_error"), 5000)
         else:
-            logger.error(f"Could not retrieve updated item data after AI edit for index {edited_item_index}")
-            main_window.statusBar().showMessage(tr("edit_ai_update_error"), 5000)
+            logger.warning(f"[edit_with_ai] No valid AI edit to apply")
 
 def translate_with_google(main_window):
     logger.debug("[translate_with_google] Action triggered. Checking prerequisites via controller...") 
@@ -126,23 +135,33 @@ def translate_with_google(main_window):
 
     dialog = GoogleTranslateDialog(main_window, item_index, current_mode)
     if dialog.exec() == QDialog.DialogCode.Accepted:
-
-        updated_items = main_window._get_current_translatable_items()
+        # Get the translated text from dialog result
+        translated_text = dialog.result_text.toPlainText() if hasattr(dialog, 'result_text') else ''
         translated_item_index = dialog.item_index
-
-        if updated_items and 0 <= translated_item_index < len(updated_items):
-            translated_item = updated_items[translated_item_index]
-            # text_key logic removed
-            translated_text = translated_item.current_text or ''
-
-            table_manager.update_table_item_text(main_window, table_widget, translated_item_index, 4, translated_text)
-            table_manager.update_table_row_style(table_widget, translated_item_index, translated_item)
-
-            main_window._set_current_tab_modified(True)
-            main_window.statusBar().showMessage(tr("google_trans_success", item=translated_item_index + 1), 3000)
+        
+        if translated_text and not translated_text.startswith("Failed"):
+            # Try FluentWindow's model-based update first
+            if hasattr(main_window, 'update_row_translation'):
+                success = main_window.update_row_translation(translated_item_index, translated_text)
+                if success:
+                    main_window._set_current_tab_modified(True)
+                    main_window.statusBar().showMessage(tr("google_trans_success", item=translated_item_index + 1), 3000)
+                    logger.info(f"[translate_with_google] Applied translation to row {translated_item_index}")
+                    return
+            
+            # Fallback to legacy table_manager for old GUI
+            updated_items = main_window._get_current_translatable_items()
+            if updated_items and 0 <= translated_item_index < len(updated_items):
+                translated_item = updated_items[translated_item_index]
+                table_manager.update_table_item_text(main_window, table_widget, translated_item_index, 4, translated_text)
+                table_manager.update_table_row_style(table_widget, translated_item_index, translated_item)
+                main_window._set_current_tab_modified(True)
+                main_window.statusBar().showMessage(tr("google_trans_success", item=translated_item_index + 1), 3000)
+            else:
+                logger.error(f"Could not retrieve updated item data after Google Translate for index {translated_item_index}")
+                main_window.statusBar().showMessage(tr("google_trans_update_error"), 5000)
         else:
-            logger.error(f"Could not retrieve updated item data after Google Translate for index {translated_item_index}")
-            main_window.statusBar().showMessage(tr("google_trans_update_error"), 5000)
+            logger.warning(f"[translate_with_google] No valid translation to apply")
 
 def batch_translate_google(main_window):
     
@@ -164,7 +183,12 @@ def batch_translate_google(main_window):
         main_window.statusBar().showMessage(tr("batch_no_active_tab"), 3000)
         return
 
-    selected_rows_indices = sorted(list(set(index.row() for index in current_table.selectedIndexes())))
+    # FIX: Use get_selected_row_ids for proper proxy-aware index mapping
+    if hasattr(current_table, "get_selected_row_ids"):
+        selected_rows_indices = current_table.get_selected_row_ids()
+    else:
+        selected_rows_indices = sorted(list(set(index.row() for index in current_table.selectedIndexes())))
+    
     if not selected_rows_indices:
         main_window.statusBar().showMessage(tr("batch_no_selected_rows"), 3000)
         return
@@ -178,10 +202,11 @@ def batch_translate_google(main_window):
         main_window.statusBar().showMessage(tr("batch_data_error"), 4000)
         return
 
-    source_code = main_window.source_lang_combo.currentData()
-    target_code = main_window.target_lang_combo.currentData()
-    source_name = main_window.source_lang_combo.currentText()
-    target_name = main_window.target_lang_combo.currentText()
+    # Use helper methods on main_window for reliable language code/name retrieval
+    source_code = main_window.get_current_source_code() if hasattr(main_window, 'get_current_source_code') else "en"
+    target_code = main_window.get_current_target_code() if hasattr(main_window, 'get_current_target_code') else "tr"
+    source_name = main_window.get_current_source_language() if hasattr(main_window, 'get_current_source_language') else "English"
+    target_name = main_window.get_current_target_language() if hasattr(main_window, 'get_current_target_language') else "Turkish"
 
     if not target_code:
         QMessageBox.warning(main_window, tr("batch_lang_required_title"), tr("batch_target_lang_required_msg"))
@@ -196,82 +221,79 @@ def batch_translate_google(main_window):
                                  QMessageBox.StandardButton.No)
     if reply != QMessageBox.StandardButton.Yes:
         main_window.statusBar().showMessage(tr("batch_canceled"), 3000)
+        # Butonları sıfırla (güvenlik için)
+        if hasattr(main_window, 'translate_page') and main_window.translate_page:
+            main_window.translate_page.set_batch_running(False)
         return
+    
+    # Kullanıcı EVET dedi - şimdi butonları disable et
+    if hasattr(main_window, 'translate_page') and main_window.translate_page:
+        main_window.translate_page.set_batch_running(True)
+        logger.debug("[batch_translate_google] User confirmed, buttons disabled")
 
-    progress = QProgressDialog(tr("batch_progress_msg"), tr("cancel"), 0, len(selected_rows_indices), main_window)
-    progress.setWindowTitle(tr("batch_google_title"))
-    progress.setWindowModality(Qt.WindowModality.WindowModal)
 
-    progress.setAutoClose(False)
-    progress.setAutoReset(False) 
+    # NOTE: Do NOT auto-switch Inspector to Toplu tab - let user control their view
+    # Progress updates will go to batch_controller -> inspector.show_batch_status
+
+    # Convert row IDs to integer indices for undo capture
+    # selected_rows_indices may be UUIDs from get_selected_row_ids()
+    row_indices_for_undo = []
+    if hasattr(main_window, '_current_table_model') and main_window._current_table_model:
+        model = main_window._current_table_model
+        for row_id in selected_rows_indices:
+            idx = model.get_index_by_id(str(row_id))
+            if idx is not None:
+                row_indices_for_undo.append(idx)
+    else:
+        # Fallback: treat as integers if no model
+        row_indices_for_undo = [int(x) if isinstance(x, int) else 0 for x in selected_rows_indices]
 
     # Capture undo snapshot before starting batch
-    main_window.batch_controller.capture_undo_snapshot(
-        current_file_data.file_path, 
-        selected_rows_indices, 
-        current_file_data.items,
-        batch_type="google"
-    )
+    if row_indices_for_undo:
+        main_window.batch_controller.capture_undo_snapshot(
+            current_file_data.file_path, 
+            row_indices_for_undo, 
+            current_file_data.items,
+            batch_type="google"
+        )
 
-    # Start via controller
+    # Start via controller - use converted integer indices
     try:
         worker, signals = controller.translation_controller.start_batch_google_translation(
             current_file_data,
-            selected_rows_indices,
+            row_indices_for_undo,  # Use converted integer indices, not UUIDs
             source_code,
             target_code
         )
     except Exception as e:
         logger.error(f"Failed to start batch Google translation: {e}")
         main_window.statusBar().showMessage("Batch start failed", 5000)
+        # Re-enable buttons on failure
+        if hasattr(main_window, 'translate_page') and main_window.translate_page:
+            main_window.translate_page.set_batch_running(False)
         return
 
-    # Signal handlers
-    # We can reuse main_window methods as slots
-    # main_window._handle_batch_item_updated(idx, text) - likely incompatible signature if signals changed
-    # Controller emits (idx, text). Handler likely expects same or more?
-    # Old Worker emitted: item_updated = pyqtSignal(int, str, object) (idx, text, item_data)
-    # Controller emits: item_updated = pyqtSignal(int, str) (idx, text)
+    # Signal handlers - progress now goes to batch_controller which updates Inspector
+    # signals.progress emits (current, total) - connect to batch_controller for Inspector updates
+    def on_progress(current, total):
+        """Forward progress to batch_controller for Inspector panel update."""
+        if hasattr(main_window, 'batch_controller') and main_window.batch_controller:
+            main_window.batch_controller._total_processed = current
+            main_window.batch_controller._total_items = total
+            main_window.batch_controller._emit_status()
     
-    # We need an adapter or update main_window handler.
-    # main_window._handle_batch_item_updated(self, idx, new_text, item_data)
-    
-    # Let's define a local adapter lambda.
-    # But item_data is in current_file_data.
-    
-    signals.progress.connect(progress.setValue)
+    signals.progress.connect(on_progress)
     signals.item_updated.connect(main_window._handle_batch_item_updated)
-    
-    # error_occurred sig in old worker is string. Controller: ???
-    # Controller uses 'BatchAIWorkerSignals' which has 'error = pyqtSignal(str)'?
-    # Actually BatchGoogleWorker uses BatchAIWorkerSignals which has 'error = pyqtSignal(str)' 
-    # BUT BatchAIWorkerSignals definition has 'error'
-    # Wait, in TranslationController I defined:
-    # class BatchAIWorkerSignals(QObject):
-    #     progress = pyqtSignal(int, int)
-    #     item_updated = pyqtSignal(int, str)
-    #     finished = pyqtSignal(dict)
-    #     error = pyqtSignal(str)
-    
-    # Old worker signals had: error_occurred, variables_warning.
-    # Controller doesn't support variables_warning yet.
-    # This is a feature gap, but acceptable for P1 refactor?
-    # I should probably map 'error' to _handle_batch_translate_error.
-    
     signals.error.connect(main_window._handle_batch_translate_error)
-    
     signals.finished.connect(main_window._handle_batch_translate_finished)
-    signals.finished.connect(progress.close) 
     
-    # request_mark_modified in old worker. Controller doesn't emit it.
-    # But controller updates ParsedFile. Main window check modifications?
-    # _handle_batch_translate_finished likely checks.
-    
-    progress.canceled.connect(worker.cancel)
+    # Cancel button in Inspector is already wired via app_bootstrap to batch_controller.cancel
+    # Worker cancel is called by batch_controller.cancel which calls worker.cancel if set
+    main_window.batch_controller.start_batch(len(row_indices_for_undo))  # Set running=True, enable cancel
+    main_window.batch_controller.set_active_worker(worker)
 
     main_window._clear_batch_results()
 
-    progress.show()
     main_window.statusBar().showMessage(tr("batch_starting"), 0) 
     
     # Disable sorting to prevent freeze on updates
@@ -294,27 +316,27 @@ def batch_translate_ai(main_window):
         main_window.statusBar().showMessage("Controller unavailable", 4000)
         return
 
-    # Check AI availability (Internet + Model)
+    # 2. Ensure Gemini Initialized (Active check via settings manager)
+    # MUST be done BEFORE check_ai_availability because availability depends on initialization
+    if not settings_manager.ensure_gemini_initialized(main_window, force_init=False):
+        main_window.statusBar().showMessage(tr("batch_ai_failed_init"), 5000)
+        # Show explicit error to avoid "no reaction"
+        QMessageBox.warning(main_window, tr("error"), tr("batch_ai_failed_init"))
+        return
+
+    # 3. Check Prerequisites (Internet, Model etc.) via Controller
+    # Now that we tried to init, this check will be accurate
     is_avail, error_msg_key = controller.translation_controller.check_ai_availability()
     if not is_avail:
         # If error key is network, show network error
         if error_msg_key == "batch_ai_unavailable_net":
             main_window.statusBar().showMessage(tr("batch_ai_unavailable_net"), 4000)
-            QMessageBox.warning(main_window, tr("error_no_network_title"), tr("error_no_network_msg_batch"))
+            QMessageBox.warning(main_window, tr("error_no_network_title"), tr("error_no_network_msg_batch_ai"))
         elif error_msg_key == "edit_ai_gemini_unavailable":
              main_window.statusBar().showMessage(tr("batch_ai_gemini_unavailable"), 5000)
              QMessageBox.warning(main_window, tr("edit_ai_gemini_error_title"), tr("edit_ai_gemini_error_msg"))
         else:
              main_window.statusBar().showMessage(tr(error_msg_key or "error"), 5000)
-        return
-
-    # 2. Ensure Gemini Initialized (Active check via settings manager)
-    # 2. Ensure Gemini Initialized (Active check via settings manager)
-    # Don't force init if already valid (avoids unnecessary resets)
-    if not settings_manager.ensure_gemini_initialized(main_window, force_init=False):
-        main_window.statusBar().showMessage(tr("batch_ai_failed_init"), 5000)
-        # Show explicit error to avoid "no reaction"
-        QMessageBox.warning(main_window, tr("error"), tr("batch_ai_failed_init"))
         return
     
     # 3. Get UI Data
@@ -325,7 +347,36 @@ def batch_translate_ai(main_window):
         main_window.statusBar().showMessage(tr("batch_no_active_tab"), 3000)
         return
     
-    selected_rows_indices = sorted(list(set(index.row() for index in current_table.selectedIndexes())))
+    # FIX: Use get_selected_row_ids for proper proxy-aware index mapping
+    selected_rows_indices = []
+    
+    if hasattr(current_table, "get_selected_row_ids"):
+        # IDs are strings (UUIDs) from RowData
+        row_ids = current_table.get_selected_row_ids()
+        
+        # Convert IDs to integer indices using model
+        model = current_table.model()
+        if hasattr(model, 'sourceModel'):
+             model = model.sourceModel()
+             
+        # Check if model has ID mapping (TranslationTableModel)
+        if hasattr(model, '_id_to_index'):
+            for rid in row_ids:
+                if rid in model._id_to_index:
+                    selected_rows_indices.append(model._id_to_index[rid])
+        else:
+            # Fallback for legacy tables or if model structure differs
+            logger.warning("Model missing _id_to_index mapping, assuming indices or falling back")
+            # If IDs are ints (legacy), use them directly
+            if row_ids and isinstance(row_ids[0], int):
+                 selected_rows_indices = row_ids
+                 
+    else:
+        selected_rows_indices = sorted(list(set(index.row() for index in current_table.selectedIndexes())))
+    
+    # Ensure indices are valid and sorted
+    selected_rows_indices = sorted(list(set(selected_rows_indices)))
+    
     if not selected_rows_indices:
         main_window.statusBar().showMessage(tr("batch_no_selected_rows"), 3000)
         return
@@ -336,8 +387,15 @@ def batch_translate_ai(main_window):
         return
     
     target_name = main_window.target_lang_combo.currentText()
-    source_code = main_window.source_lang_combo.currentData()
-    target_code = main_window.target_lang_combo.currentData()
+    source_name = main_window.source_lang_combo.currentText()
+    # Use language NAMES for Gemini (e.g., "German"), not codes (e.g., "de")
+    # Gemini understands natural language names better
+    source_lang_for_gemini = source_name.strip()
+    target_lang_for_gemini = target_name.strip()
+    
+    # DEBUG: Log the exact languages being used
+    logger.info(f"[batch_translate_ai] UI Selection -> Source: {source_name}, Target: {target_name}")
+    logger.info(f"[batch_translate_ai] Passing to Gemini -> source_lang={source_lang_for_gemini}, target_lang={target_lang_for_gemini}")
 
     confirm_msg = tr("batch_ai_confirm_msg", count=len(selected_rows_indices), model=selected_model, target=target_name)
     reply = QMessageBox.question(main_window, tr("batch_ai_title"), confirm_msg,
@@ -345,14 +403,19 @@ def batch_translate_ai(main_window):
                                  QMessageBox.StandardButton.No)
     if reply != QMessageBox.StandardButton.Yes:
         main_window.statusBar().showMessage(tr("batch_canceled"), 3000)
+        # Butonları sıfırla (güvenlik için)
+        if hasattr(main_window, 'translate_page') and main_window.translate_page:
+            main_window.translate_page.set_batch_running(False)
         return
     
-    # 4. Setup Progress
-    progress = QProgressDialog(tr("batch_ai_progress_msg"), tr("cancel"), 0, len(selected_rows_indices), main_window)
-    progress.setWindowTitle(tr("batch_ai_title"))
-    progress.setWindowModality(Qt.WindowModality.WindowModal)
-    progress.setAutoClose(False)
-    progress.setAutoReset(False)
+    # Kullanıcı EVET dedi - şimdi butonları disable et
+    if hasattr(main_window, 'translate_page') and main_window.translate_page:
+        main_window.translate_page.set_batch_running(True)
+        logger.debug("[batch_translate_ai] User confirmed, buttons disabled")
+    
+    
+    # NOTE: Do NOT auto-switch Inspector to Toplu tab - let user control their view
+    # Progress updates will go to batch_controller -> inspector.show_batch_status
     
     # Capture undo snapshot before starting batch
     main_window.batch_controller.capture_undo_snapshot(
@@ -362,42 +425,41 @@ def batch_translate_ai(main_window):
         batch_type="ai"
     )
     
-    # 5. Start Task via Controller
+    # 5. Start Task via Controller - Use NAMES, not codes!
     try:
         worker, signals = controller.translation_controller.start_batch_ai_translation(
             current_file_data, 
             selected_rows_indices, 
             selected_model,
-            source_lang=source_code,
-            target_lang=target_code
+            source_lang=source_lang_for_gemini,
+            target_lang=target_lang_for_gemini
         )
     except Exception as e:
         logger.error(f"Failed to start batch AI translation: {e}")
         main_window.statusBar().showMessage(tr("error_batch_start_failed"), 5000)
-        progress.close()
+        # Re-enable buttons on failure
+        if hasattr(main_window, 'translate_page') and main_window.translate_page:
+            main_window.translate_page.set_batch_running(False)
         return
 
-    # 6. Wire Signals (Adapters)
-    # 6. Wire Signals (Adapters)
-    # Fix P0 Bug #2: Route updates through main_window handler to ensure BatchController logic (state, modification flags) is used.
+    # 6. Wire Signals - progress now goes to batch_controller which updates Inspector
+    def on_progress(current, total):
+        """Forward progress to batch_controller for Inspector panel update."""
+        if hasattr(main_window, 'batch_controller') and main_window.batch_controller:
+            main_window.batch_controller._total_processed = current
+            main_window.batch_controller._total_items = total
+            main_window.batch_controller._emit_status()
     
-    # Use main_window handlers for standard events
-    signals.progress.connect(progress.setValue)
-    
-    # Connect directly to main_window slot. 
-    # Since signals.item_updated now matches (int, str, dict) and main_window is in Main Thread,
-    # This will automatically use a QueuedConnection, ensuring thread safety (UI updates on main thread).
+    signals.progress.connect(on_progress)
     signals.item_updated.connect(main_window._handle_batch_item_updated)
-    
-    # Connect error and finished signals to main_window handlers for consistent behavior
     signals.error.connect(main_window._handle_batch_translate_error)
     signals.finished.connect(main_window._handle_batch_translate_finished)
     
-    # Also close progress on finish
-    signals.finished.connect(progress.close)
-    progress.canceled.connect(worker.cancel)
+    # Cancel button in Inspector is already wired via app_bootstrap to batch_controller.cancel
+    # Worker cancel is called by batch_controller.cancel which calls worker.cancel if set
+    main_window.batch_controller.start_batch(len(selected_rows_indices))  # Set running=True, enable cancel
+    main_window.batch_controller.set_active_worker(worker)
     
-    progress.show()
     main_window.statusBar().showMessage(tr("batch_starting"), 0)
     
     # Disable sorting to prevent freeze on updates

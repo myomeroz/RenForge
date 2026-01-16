@@ -3,7 +3,7 @@
 Signal Wiring Tests for RenForge
 
 Tests for View↔Controller signal connections and event flow.
-Uses pytest-qt for PyQt6 signal testing.
+Uses pytest-qt for PySide6 signal testing.
 """
 
 import pytest
@@ -16,7 +16,7 @@ class TestRenForgeGUISignals:
     
     def test_gui_has_imainview_signals(self):
         """Test that RenForgeGUI defines all IMainView signals."""
-        from PyQt6.QtCore import pyqtSignal
+        from PySide6.QtCore import Signal
         from gui.renforge_gui import RenForgeGUI
         
         # Check file operation signals
@@ -49,9 +49,9 @@ class TestBootstrapWiring:
     def test_bootstrap_returns_controller_and_view(self):
         """Test that bootstrap returns both controller and view."""
         # Skip if GUI not available
-        pytest.importorskip("PyQt6.QtWidgets")
+        pytest.importorskip("PySide6.QtWidgets")
         
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         import sys
         
         # Create app if needed
@@ -73,9 +73,9 @@ class TestBootstrapWiring:
     
     def test_file_controller_signals_connected(self):
         """Test that FileController signals are connected."""
-        pytest.importorskip("PyQt6.QtWidgets")
+        pytest.importorskip("PySide6.QtWidgets")
         
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         import sys
         
         app = QApplication.instance()
@@ -97,9 +97,9 @@ class TestFileControllerSignals:
     
     def test_file_opened_signal_emitted(self, file_controller, temp_rpy_file):
         """Test that file_opened signal is emitted on successful open."""
-        pytest.importorskip("PyQt6.QtCore")
+        pytest.importorskip("PySide6.QtCore")
         
-        from PyQt6.QtTest import QSignalSpy
+        from PySide6.QtTest import QSignalSpy
         
         spy = QSignalSpy(file_controller.file_opened)
         
@@ -112,9 +112,9 @@ class TestFileControllerSignals:
     
     def test_file_error_signal_on_invalid_file(self, file_controller):
         """Test that file_error signal is emitted for invalid file."""
-        pytest.importorskip("PyQt6.QtCore")
+        pytest.importorskip("PySide6.QtCore")
         
-        from PyQt6.QtTest import QSignalSpy
+        from PySide6.QtTest import QSignalSpy
         
         spy = QSignalSpy(file_controller.file_error)
         
@@ -131,9 +131,9 @@ class TestControllerViewIntegration:
     
     def test_controller_open_file_updates_view(self):
         """Test that opening a file via controller updates the view."""
-        pytest.importorskip("PyQt6.QtWidgets")
+        pytest.importorskip("PySide6.QtWidgets")
         
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         import sys
         import tempfile
         import os

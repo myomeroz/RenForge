@@ -1,11 +1,11 @@
 
 import difflib
 import html
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
                              QTableWidgetItem, QPushButton, QHeaderView, QLabel,
                              QComboBox, QAbstractItemView, QMessageBox, QMenu)
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QIcon
+from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtGui import QColor, QIcon
 
 from renforge_logger import get_logger
 from core.change_log import get_change_log, ChangeRecord, ChangeSource
@@ -33,7 +33,7 @@ def generate_diff_html(a, b):
     return "".join(res)
 
 class ReviewPanel(QWidget):
-    request_navigation = pyqtSignal(int)
+    request_navigation = Signal(int)
     
     def __init__(self, main_window):
         super().__init__()

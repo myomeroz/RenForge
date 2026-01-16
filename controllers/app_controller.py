@@ -10,7 +10,7 @@ Main application controller that:
 
 from typing import Optional, Dict, Any, List
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 from renforge_logger import get_logger
 from locales import tr
@@ -41,10 +41,10 @@ class AppController(QObject):
         status_updated(str): Emitted with status bar message
     """
     
-    app_ready = pyqtSignal()
-    models_loaded = pyqtSignal(list)
-    languages_loaded = pyqtSignal(dict)
-    status_updated = pyqtSignal(str)
+    app_ready = Signal()
+    models_loaded = Signal(list)
+    languages_loaded = Signal(dict)
+    status_updated = Signal(str)
     
     def __init__(
         self,

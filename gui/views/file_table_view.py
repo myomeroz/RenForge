@@ -3,27 +3,26 @@
 RenForge File Table View - Model-View Mimarisi
 
 Bu modül, eski QTableWidget tabanlı sistemi QTableView + QAbstractTableModel
-mimarisi ile değiştirir. Virtual scrolling sayesinde 11,500+ satır bile
-UI donması olmadan gösterilir.
+mimarisinde çalışacak şekilde yapılandırır.
 
-NEDEN DONMA OLMAZ:
-1. Virtual scrolling: Sadece görünen ~30 satır render edilir
-2. data() O(1): Sadece list[index] erişimi
-3. Batch dataChanged: Tüm güncellemeler tek sinyalde
-4. ID bazlı güncelleme: Proxy sıralaması değişse bile doğru satır güncellenir
+Değişiklik (UX Redesign Phase 2):
+- TableRowData yerine RowData kullanımı
+- RowStatus modeline geçiş
 """
 
+import os
 from typing import Optional, List, Union, TYPE_CHECKING
 
-from PyQt6.QtWidgets import QTableWidget, QTableView
-from PyQt6.QtCore import Qt
+from PySide6.QtWidgets import QTableWidget, QTableView, QAbstractItemView, QHeaderView
+from PySide6.QtCore import Qt
 
 from renforge_logger import get_logger
 from models.parsed_file import ParsedFile, ParsedItem
 
 from gui.models.translation_table_model import (
-    TranslationTableModel, TableRowData, TableColumn
+    TranslationTableModel, TableColumn
 )
+from gui.models.row_data import RowData, RowStatus
 from gui.models.translation_filter_proxy import TranslationFilterProxyModel
 from gui.views.translation_table_view import TranslationTableView
 
@@ -37,115 +36,115 @@ logger = get_logger("gui.views.file_table_view")
 # FACTORY FONKSİYONLARI
 # =============================================================================
 
+def _is_table_perf_enabled() -> bool:
+    """
+    RENFORGE_TABLE_PERF ortam değişkeni kontrolü.
+    0, false, no, off değerlerinden biri ise False döner.
+    Varsayılan: True (performans optimizasyonları açık).
+    """
+    env_val = os.environ.get("RENFORGE_TABLE_PERF", "1").lower().strip()
+    return env_val not in ("0", "false", "no", "off")
+
+
+def apply_large_table_defaults(view: QTableView) -> None:
+    """
+    Büyük tablolar için performans varsayılanlarını uygula.
+    
+    Bu fonksiyon, ~10k+ satırlık dosyalarda UI takılmasını önler.
+    RENFORGE_TABLE_PERF=0 ile devre dışı bırakılabilir.
+    
+    Ayarlar:
+    - setSortingEnabled(False): Sıralama hesabı yok
+    - setWordWrap(False): Kelime sarma yok
+    - setUniformRowHeights(True): Tek tip satır yüksekliği
+    - setAlternatingRowColors(False): Alternatif renkler kapalı
+    - ScrollPerPixel: Pixel bazlı kaydırma
+    - Sabit satır yüksekliği (26px)
+    - Interactive header resize + stretch last section
+    """
+    if not _is_table_perf_enabled():
+        logger.debug("[apply_large_table_defaults] Disabled via RENFORGE_TABLE_PERF env")
+        return
+    
+    try:
+        # Temel performans ayarları
+        view.setSortingEnabled(False)
+        view.setWordWrap(False)
+        view.setAlternatingRowColors(False)
+        
+        # Scroll modları
+        view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        view.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        
+        # Dikey başlık (satır yüksekliği)
+        v_header = view.verticalHeader()
+        if v_header:
+            v_header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+            v_header.setDefaultSectionSize(26)
+        
+        # Yatay başlık (sütun genişliği)
+        h_header = view.horizontalHeader()
+        if h_header:
+            h_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+            h_header.setStretchLastSection(True)
+        
+        logger.debug("[apply_large_table_defaults] Applied large table performance defaults")
+        
+    except Exception as e:
+        logger.warning(f"[apply_large_table_defaults] Error applying defaults: {e}")
+
+
 def create_table_view(main_window: "RenForgeGUI") -> TranslationTableView:
-    """
-    Yeni bir tablo view oluştur.
+    """TranslationTableView oluştur ve model/proxy bağla."""
+    view = TranslationTableView(parent=main_window)
     
-    Bu fonksiyon eski create_table_widget'ın yerine geçer.
-    
-    ÖNEMLI: Selection sinyali setModel() SONRASINDA bağlanmalı!
-    Çünkü setModel() çağrıldığında selectionModel değişir.
-    
-    Returns:
-        Yapılandırılmış TranslationTableView instance
-    """
-    # View oluştur
-    view = TranslationTableView(main_window)
+    # Büyük tablo performans ayarlarını uygula
+    apply_large_table_defaults(view)
     
     # Model oluştur
-    model = TranslationTableModel(view)
+    model = TranslationTableModel(parent=view)
     
     # Proxy oluştur
-    proxy = TranslationFilterProxyModel(view)
+    proxy = TranslationFilterProxyModel(parent=view)
     proxy.setSourceModel(model)
     
-    # View'a proxy'yi bağla
+    # View'a proxy bağla
     view.setModel(proxy)
     
-    # Varsayılan sütun genişlikleri
-    view.set_default_column_widths()
+    # Selection model değişince main window'a bildir
+    # (Bunu main window içindeki bağlantılar hallediyor olabilir, 
+    # ama burada emin olmak için view sinyallerini kullanacağız)
     
-    # Referansları view'a kaydet (kolay erişim için)
-    view._source_model = model
-    view._proxy_model = proxy
-    
-    # NOT: Selection sinyali artık TranslationTableView.setModel() içinde bağlanıyor
-    # Bu sayede setModel sonrası otomatik olarak selectionModel'e bağlanır
-    
-    logger.debug("[file_table_view] Created new Model-View table")
-    
+    logger.debug("[file_table_view] Initialized table view with model & proxy")
     return view
 
 
 def get_source_model(view: TranslationTableView) -> Optional[TranslationTableModel]:
-    """View'dan source model al."""
-    return getattr(view, '_source_model', None)
-
-
-def get_proxy_model(view: TranslationTableView) -> Optional[TranslationFilterProxyModel]:
-    """View'dan proxy model al."""
-    return getattr(view, '_proxy_model', None)
-
-
-def get_row_count(table) -> int:
-    """
-    Tablo satır sayısını al - hem QTableWidget hem QTableView için çalışır.
+    """View'dan ana modeli güvenli şekilde al."""
+    if not view:
+        return None
     
-    Args:
-        table: QTableWidget veya QTableView
-        
-    Returns:
-        Satır sayısı
-    """
-    if hasattr(table, 'model') and table.model():
-        return table.model().rowCount()
-    elif hasattr(table, 'rowCount'):
-        return table.rowCount()
-    return 0
+    current_model = view.model()
+    if isinstance(current_model, TranslationFilterProxyModel):
+        return current_model.sourceModel()
+    elif isinstance(current_model, TranslationTableModel):
+        return current_model
+    
+    return None
 
 
 # =============================================================================
-# VERİ DÖNÜŞÜM FONKSİYONLARI
+# VERİ YÜKLEME (POPULATE)
 # =============================================================================
 
-def parsed_items_to_table_rows(items: List[ParsedItem], mode: str) -> List[TableRowData]:
+def parsed_items_to_table_rows(parsed_items: list, mode_str: str) -> list[RowData]:
     """
-    ParsedItem listesini TableRowData listesine dönüştür.
-    
-    Bu dönüşüm O(n) ama sadece bir kez yapılır (ilk yükleme).
-    
-    Args:
-        items: ParsedItem listesi
-        mode: "translate" veya "direct" (string veya FileMode enum)
-        
-    Returns:
-        TableRowData listesi
+    ParsedItem listesini RowData listesine dönüştür. (New Architecture)
     """
-    from renforge_enums import ItemType
-    
-    # Mode string'e çevir
-    mode_str = mode.value if hasattr(mode, 'value') else str(mode)
-    
     rows = []
     
-    for idx, item in enumerate(items):
-        # Satır numarası
-        line_idx = item.line_index
-        line_num = str(line_idx + 1) if line_idx is not None else "-"
-        
-        # Tip - enum değerini string'e çevir
-        raw_type = item.type
-        if raw_type is None:
-            item_type = ""
-        elif hasattr(raw_type, 'value'):
-            # Enum durumunda
-            item_type = raw_type.value
-        else:
-            item_type = str(raw_type)
-        
-        # variable -> var kısaltması
-        if item_type == "variable":
-            item_type = "var"
+    for idx, item in enumerate(parsed_items):
+        item_type = str(item.item_type) if hasattr(item, 'item_type') else "unknown"
         
         # Tag
         if item_type == "var":
@@ -159,21 +158,43 @@ def parsed_items_to_table_rows(items: List[ParsedItem], mode: str) -> List[Table
         original = item.original_text or ""
         translation = item.current_text or ""
         
-        # Status
-        batch_marker = getattr(item, 'batch_marker', None) or ""
-        batch_tooltip = getattr(item, 'batch_tooltip', None) or ""
+        # Status Mapping
+        status = RowStatus.UNTRANSLATED
+        if translation:
+            if getattr(item, 'is_modified_session', False):
+                status = RowStatus.MODIFIED
+            else:
+                status = RowStatus.TRANSLATED
         
-        row = TableRowData(
-            row_id=idx,  # Benzersiz ID olarak item index kullanıyoruz
-            line_num=line_num,
-            item_type=item_type,
+        # Override with batch markers
+        batch_marker = getattr(item, 'batch_marker', None)
+        error_message = getattr(item, 'batch_tooltip', None)
+        
+        if batch_marker == "AI_FAIL":
+            status = RowStatus.ERROR
+        elif batch_marker == "OK":
+            # If OK from AI, keep as TRANSLATED (or upgrade to APPROVED if we decide that)
+            if status != RowStatus.MODIFIED:
+                status = RowStatus.TRANSLATED
+        
+        is_flagged = getattr(item, 'has_breakpoint', False)
+        
+        # Ensure ID is string. ParsedItem doesn't guarantee ID, so we use index if needed,
+        # but using index is risky for updates if proxy filters change row count.
+        # Ideally ParsedItem has an ID. Assuming 'item' matches parsed file order 
+        # and we use index as ID for now like before.
+        row_id = str(idx) 
+        
+        row = RowData(
+            id=row_id,
+            row_type=item_type,
             tag=tag,
-            original=original,
-            translation=translation,
-            is_modified=item.is_modified_session,
-            has_breakpoint=item.has_breakpoint,
-            batch_marker=batch_marker,
-            batch_tooltip=batch_tooltip
+            original_text=original,
+            editable_text=translation,
+            status=status,
+            is_flagged=is_flagged,
+            error_message=error_message,
+            notes=""
         )
         
         rows.append(row)
@@ -184,24 +205,13 @@ def parsed_items_to_table_rows(items: List[ParsedItem], mode: str) -> List[Table
 def load_data_to_view(view: TranslationTableView, parsed_file: ParsedFile) -> None:
     """
     ParsedFile verisini view'a yükle.
-    
-    Bu fonksiyon eski populate_table'ın yerine geçer.
-    
-    PERFORMANS:
-    - Dönüşüm O(n) (sadece bir kez)
-    - Model reset O(1)
-    - View güncellemesi O(görünen satır sayısı)
-    
-    Args:
-        view: TranslationTableView instance
-        parsed_file: Yüklenecek ParsedFile
     """
     model = get_source_model(view)
     if not model:
         logger.error("[file_table_view] No source model found on view")
         return
     
-    # ParsedItem -> TableRowData dönüşümü
+    # ParsedItem -> RowData dönüşümü
     rows = parsed_items_to_table_rows(parsed_file.items, parsed_file.mode)
     
     # Modele yükle
@@ -218,184 +228,48 @@ def update_rows_by_id(view: TranslationTableView,
                        updates: dict) -> None:
     """
     ID bazlı toplu güncelleme.
-    
-    Bu fonksiyon, çeviri sırasında satırları güncellemek için kullanılır.
-    Proxy sıralaması değişse bile doğru satırlar güncellenir.
-    
-    Args:
-        view: TranslationTableView instance
-        updates: {row_id: {"translation": "...", "is_modified": True, ...}}
+    updates: {row_id: {"editable_text": "...", "status": RowStatus.X, ...}}
     """
     model = get_source_model(view)
     if not model:
         return
     
-    model.update_rows_by_id(updates)
+    # Ensure keys are strings since RowData.id is string
+    str_updates = {}
+    for k, v in updates.items():
+        str_updates[str(k)] = v
+        
+    model.update_rows_by_id(str_updates)
 
 
 def update_single_row(view: TranslationTableView, row_id: int, 
                        patch: dict) -> None:
     """Tek satır güncelle."""
-    update_rows_by_id(view, {row_id: patch})
+    update_rows_by_id(view, {str(row_id): patch})
 
 
 def sync_parsed_file_to_view(view: TranslationTableView, 
                               parsed_file: ParsedFile) -> None:
     """
     ParsedFile'dan view'a senkronize et.
-    
-    Bu fonksiyon, çeviri tamamlandıktan sonra tüm verileri senkronize eder.
-    
-    Args:
-        view: TranslationTableView instance
-        parsed_file: Güncel ParsedFile
     """
-    model = get_source_model(view)
-    if not model:
-        return
-    
-    # Her item için patch oluştur
-    updates = {}
-    for idx, item in enumerate(parsed_file.items):
-        updates[idx] = {
-            "translation": item.current_text or "",
-            "is_modified": item.is_modified_session,
-            "has_breakpoint": item.has_breakpoint,
-            "batch_marker": getattr(item, 'batch_marker', "") or "",
-            "batch_tooltip": getattr(item, 'batch_tooltip', "") or ""
-        }
-    
-    # Toplu güncelleme
-    if updates:
-        # Debug: İlk birkaç güncellemeyi logla
-        sample_updates = {k: v for k, v in list(updates.items())[:3]}
-        logger.info(f"[sync] Sample updates: {sample_updates}")
-    
-    model.update_rows_by_id(updates)
-    
-    # NOT: proxy.invalidate() KULLANILMAMALI - sıralamayı bozuyor!
-    # dataChanged sinyali zaten proxy tarafından otomatik iletilir
-    
-    # View'ı manuel olarak yenile
-    view.viewport().update()
-    
-    logger.info(f"[file_table_view] Synced {len(updates)} rows from ParsedFile")
+    load_data_to_view(view, parsed_file)
 
 
-# =============================================================================
-# FİLTRELEME FONKSİYONLARI
-# =============================================================================
-
-def set_search_filter(view: TranslationTableView, text: str, 
-                      column: int = -1) -> None:
-    """Arama filtresi ayarla."""
-    proxy = get_proxy_model(view)
-    if proxy:
-        proxy.set_search_text(text, column)
-
-
-def set_status_filter(view: TranslationTableView, status: str) -> None:
-    """Status filtresi ayarla."""
-    proxy = get_proxy_model(view)
-    if proxy:
-        proxy.set_status_filter(status)
-
-
-def clear_filters(view: TranslationTableView) -> None:
-    """Tüm filtreleri temizle."""
-    proxy = get_proxy_model(view)
-    if proxy:
-        proxy.clear_filters()
-
-
-# =============================================================================
-# SEÇİM FONKSİYONLARI
-# =============================================================================
-
-def get_selected_row_ids(view: TranslationTableView) -> List[int]:
-    """Seçili satırların row_id'lerini döndür."""
-    return view.get_selected_row_ids()
-
-
-def get_selected_indices(view_or_widget) -> List[int]:
+def resolve_table_widget(main_window, file_path: str = None) -> Optional[TranslationTableView]:
     """
-    Seçili satır indekslerini al.
-    
-    Geriye dönük uyumluluk için hem QTableWidget hem de 
-    TranslationTableView desteklenir.
+    Verilen dosya için table widget'ı bul.
+     Legacy compatibility helper used by gui_action_handler.
     """
-    if isinstance(view_or_widget, TranslationTableView):
-        return view_or_widget.get_selected_row_ids()
-    elif isinstance(view_or_widget, QTableWidget):
-        # Eski API uyumluluğu
-        return sorted(list(set(index.row() for index in view_or_widget.selectedIndexes())))
-    return []
-
-
-# =============================================================================
-# GERİYE DÖNÜK UYUMLULUK
-# =============================================================================
-
-def resolve_table_widget(main_window: "RenForgeGUI", 
-                          file_path: str) -> Union[QTableWidget, TranslationTableView, None]:
-    """
-    Tab'dan tablo widget/view bul.
-    
-    Geriye dönük uyumluluk için hem QTableWidget hem de 
-    TranslationTableView döndürülebilir.
-    """
-    for i in range(main_window.tab_widget.count()):
-        if main_window.tab_data.get(i) == file_path:
-            widget = main_window.tab_widget.widget(i)
-            # Yeni view veya eski widget
-            if isinstance(widget, (TranslationTableView, QTableWidget)):
-                return widget
+    # 1. FluentWindow check
+    if hasattr(main_window, 'translate_page'):
+        # If file_path is provided, we should ideally find the specific tab
+        # For now, we return the current active table view in translate page
+        # Assuming the controller switches tabs correctly before calling this
+        return main_window.translate_page.table_widget
+        
+    # 2. Legacy RenForgeGUI check (fallback)
+    if hasattr(main_window, 'get_tab_by_file_path'):
+        return main_window.get_tab_by_file_path(file_path)
+        
     return None
-
-
-def update_row_text(main_window, table_widget, row_index: int, 
-                    column_index: int, new_text: str) -> None:
-    """
-    Satır metnini güncelle.
-    
-    Geriye dönük uyumluluk için iki mod desteklenir:
-    1. Yeni: TranslationTableView + Model
-    2. Eski: QTableWidget + table_manager
-    """
-    if isinstance(table_widget, TranslationTableView):
-        # Yeni API: ID bazlı güncelleme
-        if column_index == TableColumn.EDITABLE:
-            update_single_row(table_widget, row_index, {"translation": new_text})
-    else:
-        # Eski API
-        import gui.gui_table_manager as table_manager
-        table_manager.update_table_item_text(main_window, table_widget, row_index, column_index, new_text)
-
-
-def update_row_style(table_widget, row_index: int, item_data) -> None:
-    """
-    Satır stilini güncelle.
-    
-    Yeni Model-View mimarisinde stil model'den geliyor,
-    ayrıca güncellemeye gerek yok.
-    """
-    if isinstance(table_widget, TranslationTableView):
-        # Yeni API: Model zaten stili yönetiyor
-        # Sadece data değişikliği emit edilmeli
-        model = get_source_model(table_widget)
-        if model:
-            is_modified = getattr(item_data, 'is_modified_session', False)
-            has_breakpoint = getattr(item_data, 'has_breakpoint', False)
-            batch_marker = getattr(item_data, 'batch_marker', "") or ""
-            batch_tooltip = getattr(item_data, 'batch_tooltip', "") or ""
-            
-            model.update_rows_by_id({row_index: {
-                "is_modified": is_modified,
-                "has_breakpoint": has_breakpoint,
-                "batch_marker": batch_marker,
-                "batch_tooltip": batch_tooltip
-            }})
-    else:
-        # Eski API
-        import gui.gui_table_manager as table_manager
-        table_manager.update_table_row_style(table_widget, row_index, item_data)

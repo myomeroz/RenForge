@@ -226,7 +226,8 @@ class ProjectModel:
         file_path = parsed_file.file_path
         
         if file_path in self._open_files:
-            logger.warning(f"File already open: {parsed_file.filename}")
+            # Log noise azaltma: WARNING yerine DEBUG kullanıyoruz
+            logger.debug(f"File already open: {parsed_file.filename}")
             return False
         
         self._open_files[file_path] = parsed_file

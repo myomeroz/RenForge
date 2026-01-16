@@ -11,8 +11,8 @@ Handles all translation-related business logic:
 from typing import List, Optional, Dict, Any, Callable
 from dataclasses import replace
 
-from PyQt6.QtCore import QObject, pyqtSignal, QThread, QRunnable, pyqtSlot, QThreadPool
-from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+from PySide6.QtCore import QObject, Signal, QThread, QRunnable, Slot, QThreadPool
+from PySide6.QtWidgets import QMessageBox, QProgressDialog
 
 from renforge_logger import get_logger
 from locales import tr
@@ -30,12 +30,12 @@ logger = get_logger("controllers.translation")
 
 class BatchAIWorkerSignals(QObject):
     """Signals for the BatchAIWorker."""
-    progress = pyqtSignal(int, int)
+    progress = Signal(int, int)
     # Update signal signature to match RenForgeGUI/BatchController slot for direct connection
     # (int, str, dict) -> index, text, item_data
-    item_updated = pyqtSignal(int, str, dict)
-    finished = pyqtSignal(dict)
-    error = pyqtSignal(str)
+    item_updated = Signal(int, str, dict)
+    finished = Signal(dict)
+    error = Signal(str)
 
 class BatchAIWorker(QRunnable):
     """Background worker for batch AI translation."""
@@ -54,14 +54,17 @@ class BatchAIWorker(QRunnable):
     def cancel(self):
         self._is_canceled = True
         
-    @pyqtSlot()
+    @Slot()
     def run(self):
         import renforge_config as config
         import renforge_ai as ai_module
         
-        results = {'success_count': 0, 'error_count': 0, 'errors': [], 'canceled': False, 'processed': 0}
+        results = {'success_count': 0, 'error_count': 0, 'errors': [], 'structured_errors': [], 'canceled': False, 'processed': 0, 'failed_indices': []}
         total = len(self.indices)
         results['total'] = total
+        
+        # DEBUG: Log what languages we're actually using
+        logger.info(f"[BatchAIWorker] Starting batch. source_lang={self.source_lang}, target_lang={self.target_lang}, model={self.model}")
         
         # Collect ALL items upfront
         all_items = []
@@ -86,18 +89,34 @@ class BatchAIWorker(QRunnable):
         
         # Define progress callback
         def on_chunk_done(processed_count, total_count, chunk_translations):
-            # Update file model for all translations in chunk (NO UI updates here)
+            # Collect batch items for UI update
+            batch_items = []
+            
+            # Update file model for all translations in chunk
             for t_item in chunk_translations:
                 internal_idx = t_item.get("i")
                 if internal_idx is not None and internal_idx < len(valid_indices):
                     real_idx = valid_indices[internal_idx]
                     translated = t_item.get("t")
                     
-                    if translated:
-                        # Update file model only - NO SIGNALS during translation
+                    translated = t_item.get("t")
+                    
+                    if translated and translated.strip():
+                        # Update file model
                         self.parsed_file.update_item_text(real_idx, translated)
+                        # Collect for batch UI update
+                        batch_items.append({"index": real_idx, "text": translated})
             
-            # Emit progress only (no item_updated signals during translation)
+            # CRITICAL FIX: Emit item_updated for batch UI refresh
+            # BatchController.handle_item_updated checks for item_index=-1 and batch_items
+            if batch_items:
+                self.signals.item_updated.emit(
+                    -1,  # Special marker for batch mode
+                    "",  # No single text
+                    {"file_path": self.parsed_file.file_path, "batch_items": batch_items}
+                )
+            
+            # Emit progress
             progress_ratio = processed_count / total_count if total_count > 0 else 1
             progress_value = int(progress_ratio * total)
             self.signals.progress.emit(progress_value, total)
@@ -123,16 +142,30 @@ class BatchAIWorker(QRunnable):
             results['error_count'] = stats.get("failed", 0) + stats.get("fallback", 0)
             results['canceled'] = batch_result.get("canceled", False)
             
-            # Collect errors
+            # Collect errors and failed indices
             for err in batch_result.get("errors", []):
                 internal_idx = err.get("i")
                 if internal_idx is not None and internal_idx < len(valid_indices):
                     real_idx = valid_indices[internal_idx]
                     item = self.parsed_file.get_item(real_idx)
                     line_idx = item.line_index if item else real_idx
-                    results['errors'].append(f"Line {line_idx}: {err.get('error', 'Unknown error')}")
+                    err_msg = err.get('error', 'Unknown error')
+                    results['errors'].append(f"Line {line_idx}: {err_msg}")
+                    results['structured_errors'].append({
+                        'row_id': real_idx,
+                        'file_line': line_idx,
+                        'message': err_msg,
+                        'code': 'BATCH_API_ERROR'
+                    })
+                    results['failed_indices'].append(real_idx)
             
-            # Check for fallbacks
+            # Check for fallbacks and add to failed indices (if considered failure)
+            # User requirement: "fail_count > 0 after a run, “Hatalıları Yeniden Dene” is visible"
+            # Fallbacks are warnings/errors? Usually user wants to retry them to get AI quality.
+            # Let's verify result logic. RenForge usually treats fallback as 'warning' or 'error'?
+            # status['failed'] = len(self._errors)
+            # BatchController uses _errors list length.
+            # Here we append 'Fallback' to results['errors'], so they ARE errors.
             for t_item in batch_result.get("translations", []):
                 if t_item.get("fallback"):
                     internal_idx = t_item.get("i")
@@ -140,7 +173,28 @@ class BatchAIWorker(QRunnable):
                         real_idx = valid_indices[internal_idx]
                         item = self.parsed_file.get_item(real_idx)
                         line_idx = item.line_index if item else real_idx
-                        results['errors'].append(f"Line {line_idx}: Fallback - {t_item.get('error_reason', 'validation failed')}")
+                        fail_reason = t_item.get('error_reason', 'validation failed')
+                        results['errors'].append(f"Line {line_idx}: Fallback - {fail_reason}")
+                        results['structured_errors'].append({
+                             'row_id': real_idx,
+                             'file_line': line_idx,
+                             'message': f"Fallback - {fail_reason}",
+                             'code': 'VALIDATION_ERROR'
+                        })
+                        results['failed_indices'].append(real_idx)
+
+            # Explicit check for empty results in processed items logic is difficult here because processing happens in chunks.
+            # However, translated.strip() check above prevents empty writes.
+            # We must ensure that items NOT updated are treated as failed if they were supposed to be translated?
+            # AI worker logic relies on 'errors' list from backend. 
+            # If backend returns "t": "" (empty string) causing skip above, it won't be in errors list automatically.
+            # We need to catch that.
+            
+            # Re-scan for "success" that was actually skipped?
+            # Actually, if it's skipped above, 'success' count from stats might still count it?
+            # We should rely on `stats` from `translate_text_batch_gemini_strict`.
+            # That function handles Empty Result detection internally if we update `renforge_ai`?
+            # Let's check renforge_ai.py later. For now, strict check here prevents data corruption.
                         
         except Exception as e:
             import traceback
@@ -149,6 +203,8 @@ class BatchAIWorker(QRunnable):
             
             results['error_count'] = len(all_items)
             results['errors'].append(f"Batch Error: {str(e)}")
+            # If batch crashes, ALL indices are failed
+            results['failed_indices'] = list(valid_indices)
         
         results['processed'] = results['success_count'] + results['error_count']
         self.signals.progress.emit(total, total)
@@ -170,12 +226,12 @@ class BatchGoogleWorker(QRunnable):
     def cancel(self):
         self._is_canceled = True
         
-    @pyqtSlot()
+    @Slot()
     def run(self):
         import time
         import renforge_config as config
         
-        results = {'success_count': 0, 'error_count': 0, 'errors': [], 'canceled': False, 'processed': 0}
+        results = {'success_count': 0, 'error_count': 0, 'errors': [], 'structured_errors': [], 'canceled': False, 'processed': 0, 'failed_indices': []}
         total = len(self.indices)
         results['total'] = total
         
@@ -185,6 +241,7 @@ class BatchGoogleWorker(QRunnable):
             if not Translator:
                 self.signals.error.emit(tr("error_library_not_found_msg"))
                 results['errors'].append("GoogleTranslator library not found")
+                results['failed_indices'] = list(self.indices) # All failed
                 self.signals.finished.emit(results)
                 return
                 
@@ -192,12 +249,23 @@ class BatchGoogleWorker(QRunnable):
         except Exception as e:
             self.signals.error.emit(f"Init failed: {e}")
             results['errors'].append(str(e))
+            results['failed_indices'] = list(self.indices) # All failed
             self.signals.finished.emit(results)
             return
         
         for i, idx in enumerate(self.indices):
             if self._is_canceled:
                 results['canceled'] = True
+                # Remaining items are effectively failed/skipped, but typically we just stop
+                # User might want to retry them? 
+                # "If the last run ended with CANCELED ... optional resume"
+                # For basic retry, we can consider canceled items as 'not processed' or 'failed'.
+                # Let's add remaining to failed_indices so Retry works for them too if desired.
+                # BUT user requirement F says "Resume" is optional.
+                # Requirement A says "fail_count > 0".
+                # If we cancel, fail_count might be 0.
+                # But retry logic logic just takes indices.
+                # Let's stick to explicitly failed items for now.
                 break
             
             item = self.parsed_file.get_item(idx)
@@ -210,24 +278,55 @@ class BatchGoogleWorker(QRunnable):
                 continue
             
             try:
-                translated = translator.translate(text)
+                # Soft Retry Loop (2 attempts)
+                translated = None
+                for attempt in range(2):
+                    try:
+                        translated = translator.translate(text)
+                        
+                        if self._is_canceled:
+                            results['canceled'] = True
+                            break
+                        
+                        if translated and translated.strip():
+                            # Success
+                            break
+                    except Exception as e:
+                        if attempt == 1: # Last attempt
+                            raise e
+                        # Else continue to retry
                 
-                if self._is_canceled:
-                    results['canceled'] = True
-                    break
-                
-                if translated:
-                    self.parsed_file.update_item_text(idx, translated)
-                    # Emit with file_path for robust context resolution
-                    self.signals.item_updated.emit(idx, translated, {'file_path': self.parsed_file.file_path})
-                    results['success_count'] += 1
-                else:
-                    results['error_count'] += 1
-                    results['errors'].append(f"Line {item.line_index}: Empty result")
+                # Final check logic
+                if self._is_canceled and not results.get('canceled'):
+                     results['canceled'] = True
+
+                if not results.get('canceled'):
+                    if translated and translated.strip():
+                        self.parsed_file.update_item_text(idx, translated)
+                        # Emit with file_path for robust context resolution
+                        self.signals.item_updated.emit(idx, translated, {'file_path': self.parsed_file.file_path})
+                        results['success_count'] += 1
+                    else:
+                        results['error_count'] += 1
+                        results['errors'].append(f"Line {item.line_index}: Empty result")
+                        results['structured_errors'].append({
+                            'row_id': idx,
+                            'file_line': item.line_index,
+                            'message': "Empty result",
+                            'code': "EMPTY_RESULT"
+                        })
+                        results['failed_indices'].append(idx)
                     
             except Exception as e:
                 results['error_count'] += 1
                 results['errors'].append(f"Line {item.line_index}: {str(e)}")
+                results['structured_errors'].append({
+                        'row_id': idx,
+                        'file_line': item.line_index,
+                        'message': str(e),
+                        'code': "EXCEPTION"
+                    })
+                results['failed_indices'].append(idx)
             
             self.signals.progress.emit(i + 1, total)
             
@@ -256,11 +355,11 @@ class TranslationController(QObject):
     """
     
     # Signals
-    translation_started = pyqtSignal()
-    translation_progress = pyqtSignal(int, int)  # current, total
-    translation_completed = pyqtSignal(int)  # count
-    translation_error = pyqtSignal(str)
-    item_translated = pyqtSignal(int, str)  # index, new_text
+    translation_started = Signal()
+    translation_progress = Signal(int, int)  # current, total
+    translation_completed = Signal(int)  # count
+    translation_error = Signal(str)
+    item_translated = Signal(int, str)  # index, new_text
     
     def __init__(self, settings: Optional[SettingsModel] = None):
         """

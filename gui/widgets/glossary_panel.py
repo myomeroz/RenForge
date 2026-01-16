@@ -1,9 +1,9 @@
 
 import json
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, 
                            QPushButton, QHeaderView, QDockWidget, QLabel, QLineEdit, 
                            QComboBox, QMessageBox, QDialog, QFormLayout, QFileDialog, QCheckBox)
-from PyQt6.QtCore import Qt, pyqtSignal
+from PySide6.QtCore import Qt, Signal
 from renforge_logger import get_logger
 from locales import tr
 from core.glossary_manager import GlossaryManager

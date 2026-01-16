@@ -1,9 +1,9 @@
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
                              QTableWidgetItem, QPushButton, QHeaderView, QLabel,
                              QCheckBox, QAbstractItemView, QMenu, QLineEdit)
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
-from PyQt6.QtGui import QColor, QIcon, QAction
+from PySide6.QtCore import Qt, Signal, QThread, Slot
+from PySide6.QtGui import QColor, QIcon, QAction
 
 from renforge_logger import get_logger
 from core.qa_engine import QAEngine, QAIssue, QASeverity
@@ -13,8 +13,8 @@ from locales import tr
 logger = get_logger("gui.widgets.qa_panel")
 
 class QAWorker(QThread):
-    progress = pyqtSignal(int, int)
-    finished = pyqtSignal(list)
+    progress = Signal(int, int)
+    finished = Signal(list)
     
     def __init__(self, engine, items):
         super().__init__()
@@ -35,8 +35,8 @@ class QAWorker(QThread):
         self.is_cancelled = True
 
 class QAPanel(QWidget):
-    request_navigation = pyqtSignal(int) # raw_index
-    request_refresh_overlay = pyqtSignal()
+    request_navigation = Signal(int) # raw_index
+    request_refresh_overlay = Signal()
     
     def __init__(self, main_window):
         super().__init__()

@@ -6,10 +6,10 @@ logger = get_logger("gui.tab_manager")
 
 try:
 
-    from PyQt6.QtWidgets import QApplication, QMessageBox, QTableWidget
-    from PyQt6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidget
+    from PySide6.QtCore import Qt
 except ImportError:
-    logger.critical("PyQt6 is required for tab management but not found.")
+    logger.critical("PySide6 is required for tab management but not found.")
     import sys
     sys.exit(1)
 

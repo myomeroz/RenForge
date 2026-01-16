@@ -13,11 +13,11 @@ PERFORMANS AYARLARI:
 
 from typing import Optional, List
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QTableView, QHeaderView, QAbstractItemView, QApplication, QMenu
 )
-from PyQt6.QtCore import Qt, QModelIndex, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QAction, QClipboard
+from PySide6.QtCore import Qt, QModelIndex, Signal
+from PySide6.QtGui import QKeySequence, QAction, QClipboard
 
 from renforge_logger import get_logger
 
@@ -42,8 +42,8 @@ class TranslationTableView(QTableView):
     """
     
     # Sinyaller
-    row_double_clicked = pyqtSignal(int)  # row_id
-    rows_selected = pyqtSignal(list)  # [row_id, ...] - yeni sinyal
+    row_double_clicked = Signal(int)  # row_id
+    rows_selected = Signal(list)  # [row_id, ...] - yeni sinyal
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -66,32 +66,6 @@ class TranslationTableView(QTableView):
         if self.selectionModel():
             self.selectionModel().selectionChanged.connect(self._on_internal_selection_changed)
             logger.debug("[TranslationTableView] Selection signal connected after setModel")
-    
-    def _on_internal_selection_changed(self, selected, deselected):
-        """
-        Selection değiştiğinde tetiklenir.
-        Main window'un UI'ını günceller.
-        """
-        selection_model = self.selectionModel()
-        if not selection_model:
-            return
-        
-        selected_rows = selection_model.selectedRows()
-        selected_count = len(selected_rows)
-        
-        logger.debug(f"[TranslationTableView] Selection changed: {selected_count} rows selected")
-        
-        # Sinyal emit et
-        row_ids = self.get_selected_row_ids()
-        self.rows_selected.emit(row_ids)
-        
-        # Main window'un UI state'ini güncelle
-        if self._main_window and hasattr(self._main_window, '_update_ui_state'):
-            self._main_window._update_ui_state()
-        
-        # Current item index'i güncelle
-        if row_ids and self._main_window and hasattr(self._main_window, '_set_current_item_index'):
-            self._main_window._set_current_item_index(row_ids[-1])
     
     def _setup_performance(self) -> None:
         """Performans için kritik ayarlar."""
@@ -260,13 +234,49 @@ class TranslationTableView(QTableView):
     def copy_full_rows_to_clipboard(self) -> None:
         """Seçili satırların tamamını kopyala."""
         self.copy_selection_to_clipboard()
-    
+
+    def _on_internal_selection_changed(self, selected, deselected):
+        """
+        Selection değiştiğinde tetiklenir.
+        Main window'un UI'ını günceller.
+        
+        CRITICAL FIX: get_selected_row_ids() çağırmadan doğrudan index üzerinden ID al.
+        """
+        selection_model = self.selectionModel()
+        if not selection_model:
+            return
+        
+        # Optimize edilmiş row listesi (sadece column 0'ı alır)
+        selected_rows = selection_model.selectedRows(0)
+        selected_count = len(selected_rows)
+        
+        logger.debug(f"[TranslationTableView] Selection changed: {selected_count} rows selected")
+        
+        # ID listesini oluştur (model.index() çağırmadan!)
+        row_ids = []
+        for idx in selected_rows:
+            # Doğrudan index üzerinden UserRole (row_id) al
+            # NOT: Proxy model kullanılıyorsa data() proxy üzerinden doğru gelir
+            rid = idx.data(Qt.ItemDataRole.UserRole)
+            if rid is not None:
+                row_ids.append(rid)
+        
+        # Sinyal emit et
+        self.rows_selected.emit(row_ids)
+        
+        # Main window'un UI state'ini güncelle
+        if self._main_window and hasattr(self._main_window, '_update_ui_state'):
+            self._main_window._update_ui_state()
+        
+        # Current item index'i güncelle (son seçileni kullan)
+        if row_ids and self._main_window and hasattr(self._main_window, '_set_current_item_index'):
+            self._main_window._set_current_item_index(row_ids[-1])
+
     def get_selected_row_ids(self) -> List[int]:
         """
         Seçili satırların row_id'lerini döndür.
         
-        NOT: Bu metod proxy model üzerinden çalışır.
-        Source model'e erişmek için mapToSource kullanılır.
+        OPTIMIZED: selectedRows(0) ve direct index access kullanır.
         """
         model = self.model()
         if not model:
@@ -276,17 +286,13 @@ class TranslationTableView(QTableView):
         if not selection.hasSelection():
             return []
         
-        row_ids = []
-        selected_rows = set()
+        # Sadece column 0 indekslerini al (tekilleştirilmiş satırlar)
+        selected_rows = selection.selectedRows(0)
         
-        for index in selection.selectedIndexes():
-            row = index.row()
-            if row in selected_rows:
-                continue
-            selected_rows.add(row)
-            
-            # UserRole'dan row_id al
-            row_id = model.data(model.index(row, 0), Qt.ItemDataRole.UserRole)
+        row_ids = []
+        for idx in selected_rows:
+            # Doğrudan index'ten data oku (model.index() maliyetinden kaçın)
+            row_id = idx.data(Qt.ItemDataRole.UserRole)
             if row_id is not None:
                 row_ids.append(row_id)
         

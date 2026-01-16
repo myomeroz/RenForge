@@ -51,6 +51,7 @@ class TranslationTableWidget(QWidget):
         super().__init__(parent)
         
         self._current_filter = self.FILTER_ALL
+        self._flash_overlay = None # For row highlight
         self._setup_ui()
         
         logger.debug("TranslationTableWidget initialized")
@@ -198,7 +199,118 @@ class TranslationTableWidget(QWidget):
         """Set the data model for the table view."""
         self.table_view.setModel(model)
         self._update_row_count()
-    
+        
+    def select_line(self, line_num: int):
+        """
+        Select row corresponding to file line number (using ID).
+        Handles mapping from source model to proxy model if applicable.
+        """
+        model = self.table_view.model()
+        if not model:
+            return
+            
+        row_id = str(line_num)
+        
+        # Determine strict or proxy
+        source_model = model
+        is_proxy = False
+        
+        if hasattr(model, 'sourceModel'):
+             source_model = model.sourceModel()
+             is_proxy = True
+             
+        # Find source index
+        if hasattr(source_model, 'get_index_by_id'):
+            source_row = source_model.get_index_by_id(row_id)
+            if source_row is not None:
+                source_idx = source_model.index(source_row, 0)
+                
+                final_idx = source_idx
+                if is_proxy:
+                    final_idx = model.mapFromSource(source_idx)
+                    
+                if final_idx.isValid():
+                    self.table_view.selectRow(final_idx.row())
+                    self.table_view.scrollTo(final_idx)
+                    logger.debug(f"Selected line {line_num} (row {final_idx.row()})")
+                else:
+                    logger.warning(f"Row {line_num} found but filtered out or invalid")
+            else:
+                logger.warning(f"Line {line_num} not found in model")
+
+    def select_row_by_index(self, row_index: int):
+        """
+        Select row by internal 0-based row index (from TableModel).
+        Handles mapping if proxy is active.
+        """
+        model = self.table_view.model()
+        if not model:
+            return
+            
+        # Determine strict or proxy
+        source_model = model
+        is_proxy = False
+        
+        if hasattr(model, 'sourceModel'):
+             source_model = model.sourceModel()
+             is_proxy = True
+             
+        # Create source index (0,0)
+        source_idx = source_model.index(row_index, 0)
+        
+        if not source_idx.isValid():
+            logger.warning(f"Row index {row_index} invalid in source model")
+            return
+            
+        final_idx = source_idx
+        if is_proxy:
+            final_idx = model.mapFromSource(source_idx)
+            
+        if final_idx.isValid():
+            self.table_view.selectRow(final_idx.row())
+            self.table_view.scrollTo(final_idx)
+            logger.debug(f"Selected row index {row_index} (view row {final_idx.row()})")
+            
+            # Flash highlight
+            self._flash_row(final_idx)
+        else:
+            logger.warning(f"Row index {row_index} filtered out or hidden")
+            
+    def _flash_row(self, index):
+        """Flash a red highlight on the row."""
+        from PySide6.QtWidgets import QFrame, QGraphicsOpacityEffect
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
+        
+        # Remove existing overlay
+        if self._flash_overlay:
+            try:
+                self._flash_overlay.deleteLater()
+            except RuntimeError:
+                pass # Already deleted
+            self._flash_overlay = None
+            
+        # Get rect in viewport
+        rect = self.table_view.visualRect(index)
+        if not rect.isValid():
+            return
+            
+        # Create overlay
+        self._flash_overlay = QFrame(self.table_view.viewport())
+        self._flash_overlay.setStyleSheet("background-color: rgba(196, 43, 28, 0.3); border: 1px solid #c42b1c; border-radius: 4px;")
+        self._flash_overlay.setGeometry(rect)
+        self._flash_overlay.show()
+        
+        # Fade out animation
+        self.fade_eff = QGraphicsOpacityEffect(self._flash_overlay)
+        self._flash_overlay.setGraphicsEffect(self.fade_eff)
+        
+        self.anim = QPropertyAnimation(self.fade_eff, b"opacity")
+        self.anim.setDuration(1500)
+        self.anim.setStartValue(1.0)
+        self.anim.setEndValue(0.0)
+        self.anim.setEasingCurve(QEasingCurve.OutQuad)
+        self.anim.finished.connect(self._flash_overlay.deleteLater)
+        self.anim.start()
     def set_proxy_model(self, proxy_model):
         """Set the proxy model for filtering."""
         self.table_view.setModel(proxy_model)
@@ -220,6 +332,22 @@ class TranslationTableWidget(QWidget):
         """Reset filter to 'all'."""
         self.filter_segment.setCurrentItem("all")
         self._current_filter = self.FILTER_ALL
+    
+    def set_filter(self, filter_key: str):
+        """
+        Programmatically set the filter.
+        
+        Args:
+            filter_key: One of the FILTER_* constants
+        """
+        if filter_key != self._current_filter:
+            self.filter_segment.setCurrentItem(filter_key)
+            # The signal handler _on_filter_segment_changed will handle the rest
+            
+    def scroll_to_top(self):
+        """Scroll the table view to the top."""
+        if self.table_view:
+            self.table_view.scrollToTop()
     
     def update_row_count(self, count: int):
         """Update the row count label."""

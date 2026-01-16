@@ -1,9 +1,9 @@
 
 import re
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QListWidget, QListWidgetItem, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QListWidget, QListWidgetItem, 
                              QLabel, QPushButton, QHBoxLayout, QMessageBox, QCheckBox)
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont
 
 from renforge_logger import get_logger
 from core.tm_store import get_tm_manager, TMEntry
@@ -15,7 +15,7 @@ import time
 logger = get_logger("gui.widgets.tm_panel")
 
 class TMEntryWidget(QWidget):
-    apply_clicked = pyqtSignal()
+    apply_clicked = Signal()
     
     def __init__(self, entry: TMEntry, parent=None):
         super().__init__(parent)

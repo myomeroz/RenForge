@@ -8,15 +8,15 @@ from renforge_logger import get_logger
 logger = get_logger("gui")
 
 try:
-    from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+    from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QMessageBox, QTabWidget, QSplitter, QTableWidget,
                                QDockWidget, QLabel, QTableView) 
-    from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize, pyqtSlot, QDir
-    from PyQt6.QtGui import QFont, QIcon, QFileSystemModel 
+    from PySide6.QtCore import Qt, QTimer, Signal, QSize, Slot, QDir
+    from PySide6.QtGui import QFont, QIcon, QFileSystemModel 
     GUI_AVAILABLE = True
 except ImportError:
-    logger.critical("PyQt6 is required for the GUI but not found.")
-    logger.critical("Please install it: pip install PyQt6")
+    logger.critical("PySide6 is required for the GUI but not found.")
+    logger.critical("Please install it: pip install PySide6")
     GUI_AVAILABLE = False
     sys.exit(1)
 
@@ -80,28 +80,29 @@ class RenForgeGUI(QMainWindow):
     # =========================================================================
     
     # File operations
-    open_project_requested = pyqtSignal()
-    open_file_requested = pyqtSignal()
-    save_requested = pyqtSignal()
-    save_all_requested = pyqtSignal()
-    file_loaded = pyqtSignal(str)  # file path (for legacy sync)
-    close_tab_requested = pyqtSignal(int)  # tab index
-    exit_requested = pyqtSignal()
+    open_project_requested = Signal()
+    open_file_requested = Signal()
+    save_requested = Signal()
+    save_all_requested = Signal()
+    save_as_requested = Signal() # Phase 5: Added for Save As support
+    file_loaded = Signal(str)  # file path (for legacy sync)
+    close_tab_requested = Signal(int)  # tab index
+    exit_requested = Signal()
     
     # Navigation
-    tab_changed = pyqtSignal(int)  # tab index
-    item_selected = pyqtSignal(int)  # item index
+    tab_changed = Signal(int)  # tab index
+    item_selected = Signal(int)  # item index
     
     # Translation
-    translate_google_requested = pyqtSignal()
-    translate_ai_requested = pyqtSignal()
-    batch_google_requested = pyqtSignal()
-    batch_ai_requested = pyqtSignal()
+    translate_google_requested = Signal()
+    translate_ai_requested = Signal()
+    batch_google_requested = Signal()
+    batch_ai_requested = Signal()
     
     # Settings
-    target_language_changed = pyqtSignal(str)  # language code
-    source_language_changed = pyqtSignal(str)  # language code
-    model_changed = pyqtSignal(str)  # model name
+    target_language_changed = Signal(str)  # language code
+    source_language_changed = Signal(str)  # language code
+    model_changed = Signal(str)  # model name
 
 
     def __init__(self):
@@ -215,27 +216,27 @@ class RenForgeGUI(QMainWindow):
     def _batch_warnings(self):
         return self.batch_controller.warnings
 
-    @pyqtSlot(int, str, dict)
+    @Slot(int, str, dict)
     def _handle_batch_item_updated(self, item_index, translated_text, updated_item_data_copy):
         """Delegate to BatchController."""
         self.batch_controller.handle_item_updated(item_index, translated_text, updated_item_data_copy)
 
-    @pyqtSlot(str)
+    @Slot(str)
     def _handle_batch_translate_error(self, details):
         """Delegate to BatchController."""
         self.batch_controller.handle_error(details)
 
-    @pyqtSlot(str)
+    @Slot(str)
     def _handle_batch_translate_warning(self, details):
         """Delegate to BatchController."""
         self.batch_controller.handle_warning(details)
 
-    @pyqtSlot()
+    @Slot()
     def _mark_tab_modified_from_worker(self):
         """Delegate to BatchController."""
         self.batch_controller.mark_tab_modified()
 
-    @pyqtSlot(dict)
+    @Slot(dict)
     def _handle_batch_translate_finished(self, results):
         """Delegate to BatchController and update summary panel."""
         self.batch_controller.handle_finished(results)
@@ -256,7 +257,7 @@ class RenForgeGUI(QMainWindow):
                 undo_mgr.has_undo(current_file_data.file_path)
             )
     
-    @pyqtSlot(str)
+    @Slot(str)
     def _handle_filter_changed(self, filter_type: str):
         """Handle filter selection change from FilterToolbar."""
         current_table = self._get_current_table()
@@ -309,7 +310,7 @@ class RenForgeGUI(QMainWindow):
                 total = len(current_file_data.items)
                 self.filter_toolbar.set_info(f"Showing {visible}/{total}")
     
-    @pyqtSlot()
+    @Slot()
     def _handle_undo_requested(self):
         """Handle Undo Last Batch request."""
         current_file_data = self._get_current_file_data()
@@ -781,7 +782,7 @@ class RenForgeGUI(QMainWindow):
         state_hex = self.settings.get("window_state")
         if state_hex:
             try:
-                from PyQt6.QtCore import QByteArray
+                from PySide6.QtCore import QByteArray
                 state = QByteArray.fromHex(str(state_hex).encode())
                 self.restoreState(state)
                 logger.debug("Workspace state restored from settings.")
@@ -823,10 +824,10 @@ class RenForgeGUI(QMainWindow):
             current_table.selectRow(found_row)
             # QTableView için scrollTo(), QTableWidget için scrollToItem()
             if hasattr(current_table, 'scrollTo') and model:
-                from PyQt6.QtWidgets import QAbstractItemView
+                from PySide6.QtWidgets import QAbstractItemView
                 current_table.scrollTo(model.index(found_row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
             elif hasattr(current_table, 'scrollToItem') and hasattr(current_table, 'item'):
-                from PyQt6.QtWidgets import QAbstractItemView
+                from PySide6.QtWidgets import QAbstractItemView
                 current_table.scrollToItem(current_table.item(found_row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
         else:
             self.statusBar().showMessage("QA: Item not visible in current view.", 3000)

@@ -5,12 +5,12 @@ RenForge Batch Summary Panel
 Collapsible dock widget showing last batch operation results.
 """
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QPushButton, QTextEdit, QFrame, QApplication
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 
 from renforge_logger import get_logger
 from locales import tr
@@ -26,8 +26,8 @@ class BatchSummaryPanel(QDockWidget):
     Provides: Copy Summary button, Undo Last Batch button
     """
     
-    undo_requested = pyqtSignal()  # Emitted when Undo button clicked
-    open_review_requested = pyqtSignal() # Emitted when Review button clicked
+    undo_requested = Signal()  # Emitted when Undo button clicked
+    open_review_requested = Signal() # Emitted when Review button clicked
     
     def __init__(self, parent=None):
         super().__init__(tr("batch_panel_title"), parent)

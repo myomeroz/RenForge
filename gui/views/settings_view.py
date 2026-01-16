@@ -6,7 +6,7 @@ Extracted settings-related view logic from RenForgeGUI for cleaner separation.
 These functions operate on a main_window instance passed as the first argument.
 """
 
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 
 from renforge_logger import get_logger
 logger = get_logger("gui.views.settings_view")

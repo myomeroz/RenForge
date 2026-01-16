@@ -27,6 +27,24 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # Flag to track if root logger is configured
 _root_configured = False
+_startup_buffer = []  # List to store startup LogRecords
+MAX_STARTUP_BUFFER = 500  # Max records to keep
+
+
+class StartupBufferHandler(logging.Handler):
+    """
+    Handler that buffers log records in memory until they can be 
+    dumped to the Inspector UI.
+    """
+    def __init__(self):
+        super().__init__()
+        self.setLevel(logging.DEBUG)
+    
+    def emit(self, record):
+        global _startup_buffer
+        if len(_startup_buffer) >= MAX_STARTUP_BUFFER:
+            return
+        _startup_buffer.append(record)
 
 
 def _configure_root_logger():
@@ -51,10 +69,37 @@ def _configure_root_logger():
     file_handler.setLevel(logging.DEBUG)  # Dosyaya tüm seviyeleri yaz
     file_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
     
+    # Startup Buffer Handler (YENİ)
+    # Stores logs until Inspector is ready
+    buffer_handler = StartupBufferHandler()
+    
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
+    root_logger.addHandler(buffer_handler)
     
     _root_configured = True
+
+
+def flush_startup_buffer(target_handler):
+    """
+    Flush buffered startup logs to the given target handler.
+    Called when InspectorLogHandler is installed.
+    """
+    global _startup_buffer
+    if not _startup_buffer:
+        return
+    
+    # Emit all buffered records to the new handler
+    for record in _startup_buffer:
+        target_handler.emit(record)
+    
+    # Clear buffer to free memory (and stop buffering generally? 
+    # Actually we might want to remove the handler, but keeping it simple for now)
+    _startup_buffer.clear()
+    
+    # Remove the buffer handler from root logger if possible?
+    # For now just clearing the list is enough.
+
 
 
 def setup_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:

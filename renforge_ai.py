@@ -60,7 +60,7 @@ def _lazy_import_genai():
             logger.error("Failed to lazy import google.generativeai. AI features disabled.")
 
             try:
-                from PyQt6.QtWidgets import QApplication, QMessageBox
+                from PySide6.QtWidgets import QApplication, QMessageBox
 
                 is_gui_running = QApplication.instance() is not None
                 if is_gui_running:
@@ -69,7 +69,7 @@ def _lazy_import_genai():
                                        "Установите ее: pip install google-generativeai\n"
                                        "Функции ИИ будут недоступны.")
             except ImportError:
-                 logger.info("PyQt6 not found, skipping GUI warning for google.generativeai import error.")
+                 logger.info("PySide6 not found, skipping GUI warning for google.generativeai import error.")
             no_ai = True 
             return None
     return genai
@@ -92,7 +92,7 @@ def _lazy_import_translator():
             logger.error("Failed to lazy import deep_translator. Translate features disabled.")
 
             try:
-                from PyQt6.QtWidgets import QApplication, QMessageBox
+                from PySide6.QtWidgets import QApplication, QMessageBox
                 is_gui_running = QApplication.instance() is not None
                 if is_gui_running:
                     QMessageBox.critical(None, "Ошибка импорта",
@@ -100,7 +100,7 @@ def _lazy_import_translator():
                                    "Установите ее: pip install deep-translator\n"
                                    "Функции перевода Google будут недоступны.")
             except ImportError:
-                 logger.info("PyQt6 not found, skipping GUI warning for deep_translator import error.")
+                 logger.info("PySide6 not found, skipping GUI warning for deep_translator import error.")
             return None 
     return GoogleTranslator
 
@@ -988,26 +988,50 @@ def get_google_languages() -> dict | None:
         return None
 
 def load_api_key():
-
-    logger.debug("[load_api_key] Called. Attempting to load settings...") 
-    settings = rf_settings.load_settings() 
-
-    if not isinstance(settings, dict):
-        logger.error(f"[load_api_key] rf_settings.load_settings did not return a dictionary (returned {type(settings)}).")
-        return None
-    key = settings.get("api_key") 
-    if key:
-
-        if isinstance(key, str) and key.strip():
+    """
+    Load Gemini API Key from multiple sources:
+    1. Environment variable GEMINI_API_KEY
+    2. Settings 'gemini_api_key'
+    3. Settings 'api_key' (legacy)
+    """
+    # 1. Environment Variable
+    env_key = os.environ.get("GEMINI_API_KEY")
+    if env_key and env_key.strip():
+        logger.debug("[load_api_key] Found valid key in GEMINI_API_KEY env var.")
+        return env_key.strip()
+    
+    # 2. Settings (Use SettingsModel for immediate consistency with UI)
+    try:
+        from models.settings_model import SettingsModel
+        settings = SettingsModel.instance()
+        
+        # Check gemini_api_key first
+        key = settings.get("gemini_api_key")
+        if key and isinstance(key, str) and key.strip():
             masked_key = f"...{key[-4:]}" if len(key) >=4 else key
-            logger.debug(f"[load_api_key] Found valid key ending with {masked_key}.") 
-            return key 
-        else:
-            logger.warning(f"[load_api_key] Found 'api_key' but it's not a valid non-empty string. Returning None.")
-            return None 
-    else:
-        logger.debug(f"[load_api_key] Key 'api_key' not found or is None. Returning None.") 
-        return None 
+            logger.debug(f"[load_api_key] Found 'gemini_api_key' in settings ending with {masked_key}.")
+            return key.strip()
+            
+        # Check legacy api_key
+        key = settings.get("api_key")
+        if key and isinstance(key, str) and key.strip():
+            masked_key = f"...{key[-4:]}" if len(key) >=4 else key
+            logger.debug(f"[load_api_key] Found legacy 'api_key' in settings ending with {masked_key}.")
+            return key.strip()
+            
+    except Exception as e:
+        logger.error(f"[load_api_key] Error accessing SettingsModel: {e}")
+        # Fallback to direct file read if Model fails (e.g. partial init)
+        try:
+             settings_dict = rf_settings.load_settings()
+             if isinstance(settings_dict, dict):
+                 key = settings_dict.get("gemini_api_key") or settings_dict.get("api_key")
+                 if key and isinstance(key, str) and key.strip():
+                     return key.strip()
+        except:
+            pass
+        
+    return None 
 
 def save_api_key(api_key):
 
@@ -1173,26 +1197,34 @@ def get_available_models(force_refresh=False):
         return None
 
 def configure_gemini(model_name_to_use=None):
-
+    """
+    Configure Gemini API with the given model.
+    """
     global gemini_model, no_ai, genai 
 
-    if gemini_model is None or no_ai:
-        logger.debug("[configure_gemini] Checking internet connection...")
-        if not is_internet_available():
-            logger.warning("[configure_gemini] Failed: Internet connection not available.")
-            no_ai = True
-            gemini_model = None
-
-            return False
-
-    if genai and gemini_model and not no_ai and gemini_model.model_name.endswith(model_name_to_use):
-        logger.debug(f"Skipping configure_gemini: Already configured for {model_name_to_use}")
-        return True 
-
+    # 1. NORMALIZE MODEL NAME
+    # Remove 'models/' prefix if present (e.g., 'models/gemini-2.0-flash' -> 'gemini-2.0-flash')
+    if model_name_to_use and model_name_to_use.startswith("models/"):
+        logger.debug(f"[configure_gemini] Removing 'models/' prefix from {model_name_to_use}")
+        model_name_to_use = model_name_to_use.replace("models/", "")
+    
+    # Defaults
     if model_name_to_use is None:
         model_name_to_use = config.DEFAULT_MODEL_NAME
-    logger.debug(f"Target model: {model_name_to_use}") 
 
+    logger.debug(f"[configure_gemini] Target model: {model_name_to_use}") 
+
+    # 2. CHECK IF ALREADY CONFIGURED
+    if genai and gemini_model and not no_ai:
+        try:
+             # Check if current model name matches (handling generic model objects)
+             if hasattr(gemini_model, 'model_name') and gemini_model.model_name.endswith(model_name_to_use):
+                 logger.debug(f"Skipping configure_gemini: Already configured for {model_name_to_use}")
+                 return True
+        except:
+             pass # Re-configure if check fails
+
+    # 3. IMPORT GENAI
     genai_module = _lazy_import_genai()
     if genai_module is None:
         no_ai = True 
@@ -1200,118 +1232,69 @@ def configure_gemini(model_name_to_use=None):
         logger.error("configure_gemini failed: google.generativeai module not imported.")
         return False 
 
+    # 4. LOAD API KEY
     api_key = load_api_key()
+    is_gui = 'PySide6.QtWidgets' in sys.modules and sys.modules['PySide6.QtWidgets'].QApplication.instance() is not None
 
-    is_gui = 'PyQt6.QtWidgets' in sys.modules and sys.modules['PyQt6.QtWidgets'].QApplication.instance() is not None
-
-    if api_key:
-
-        masked_key = f"...{api_key[-4:]}" if len(api_key) >= 4 else api_key
-        logger.debug(f"API Key loaded successfully (ends with: {masked_key})") 
-    else:
+    if not api_key:
         logger.warning("API Key not found in settings.") 
         if not is_gui:
             logger.info("GUI not detected, prompting for API key in console...") 
             api_key = prompt_for_api_key(force_prompt=True)
         else:
-
-            no_ai = True
-            gemini_model = None
-            logger.warning("configure_gemini failed: API Key missing (GUI detected).")
-            return False 
-
-    if not api_key and not is_gui:
-        logger.info("API key not found in settings. Prompting...")
-        api_key = prompt_for_api_key(force_prompt=True) 
-
-    if not api_key:
-        no_ai = True
-        gemini_model = None
-        logger.warning("configure_gemini failed: API Key still missing after prompt.")
-        return False 
-
-    try:
-
-        logger.debug("[configure_gemini] Checking internet connection before creating model object...")
-        if not is_internet_available():
-             logger.warning("[configure_gemini] Failed: Internet connection lost before creating model.")
              no_ai = True
              gemini_model = None
+             logger.warning("configure_gemini failed: API Key missing (GUI detected).")
+             return False 
 
-             is_gui = 'PyQt6.QtWidgets' in sys.modules and sys.modules['PyQt6.QtWidgets'].QApplication.instance() is not None
-             if is_gui:
-                try:
-                    from PyQt6.QtWidgets import QMessageBox
-                    QMessageBox.critical(None, "Сетевая ошибка Gemini", "Не удалось создать объект модели Gemini.\nПроверьте ваше интернет-соединение.")
-                except Exception as msg_err:
-                    logger.error(f"Could not show GUI error message box: {msg_err}")
-             return False
-        masked_key_for_config = f"...{api_key[-4:]}" if len(api_key) >= 4 else api_key
-        logger.debug(f"Configuring genai with key ending in {masked_key_for_config}") 
+    if not api_key:
+         no_ai = True
+         gemini_model = None
+         return False
+
+    # 5. CONFIGURE & CREATE MODEL
+    try:
+        logger.debug(f"[configure_gemini] Configuring genai...")
         genai_module.configure(api_key=api_key)
-        logger.debug("genai.configure called successfully.") 
+        
+        # Safety settings (standard block)
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
 
-        logger.debug(f"Attempting to create/verify model: {model_name_to_use}") 
-
+        logger.debug(f"[configure_gemini] Creating GenerativeModel: {model_name_to_use}")
         gemini_model = genai_module.GenerativeModel(
-             model_name_to_use
+             model_name_to_use,
+             safety_settings=safety_settings
         )
-
-        logger.debug(f"[configure_gemini] Model object created. gemini_model is None={gemini_model is None}") 
-
-        logger.info(f"Model '{model_name_to_use}' object created successfully.") 
+        
+        logger.info(f"Model '{model_name_to_use}' configured successfully.") 
         no_ai = False 
         return True 
-    except ImportError:
 
-        logger.error("[configure_gemini] google.generativeai not imported.")
+    except ImportError:
+        logger.error("[configure_gemini] google.generativeai not imported during config.")
         no_ai = True
         gemini_model = None
         return False
-    except Exception as e:
 
+    except Exception as e:
+        logger.exception(f"[configure_gemini] Critical error: {e}")
         no_ai = True 
         gemini_model = None 
-        logger.error(f"Error during Gemini configuration or model creation: {e}")
-
+        
+        # Log detailed error for debugging
         error_str = str(e).lower()
-        gui_message_title = "Ошибка Gemini"
-        gui_message_text = f"Не удалось настроить Gemini API или создать модель '{model_name_to_use}'.\n\nОшибка: {e}"
-
-        network_error_keywords = ["deadline exceeded", "timeout", "connection refused", "network is unreachable", "dns lookup", "unavailable", "service unavailable", "404", "503"]
-        auth_error_keywords = ["api key", "permission denied", "authentication", "invalid", "403", "401"]
-
-        is_network_error = any(keyword in error_str for keyword in network_error_keywords)
-        is_auth_error = any(keyword in error_str for keyword in auth_error_keywords)
-
-        if is_network_error:
-            logger.warning("Error seems network-related during configuration.")
-            gui_message_title = "Сетевая ошибка Gemini"
-            gui_message_text = f"Не удалось связаться с Gemini API.\nПроверьте ваше интернет-соединение.\n\nОшибка: {e}"
-        elif is_auth_error:
-
-            logger.warning("Error likely related to API Key validity or permissions.")
-            gui_message_title = "Ошибка API ключа Gemini"
-            gui_message_text = (f"Не удалось настроить Gemini API.\n"
-                                f"Проверьте правильность и действительность вашего API ключа и доступ к модели '{model_name_to_use}'.\n\n"
-                                f"Ошибка: {e}")
-        elif ("not found" in error_str) and model_name_to_use in str(e):
-
-             logger.warning(f"Error: Model '{model_name_to_use}' not found or unavailable.")
-             gui_message_title = "Модель Gemini не найдена"
-             gui_message_text = f"Указанная модель '{model_name_to_use}' не найдена или недоступна для вашего ключа.\nПроверьте имя модели или выберите другую.\n\nОшибка: {e}"
-        else:
-             logger.warning("An unexpected error occurred during configuration.")
-
-        is_gui = 'PyQt6.QtWidgets' in sys.modules and sys.modules['PyQt6.QtWidgets'].QApplication.instance() is not None
-        if is_gui:
-            try:
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.critical(None, gui_message_title, gui_message_text)
-            except Exception as msg_err:
-                logger.error(f"Could not show GUI error message box: {msg_err}")
-
-        return False 
+        if "not found" in error_str or "404" in error_str:
+             logger.error(f"Model '{model_name_to_use}' not found. Check if it exists or if API key has access.")
+        elif "api key" in error_str or "403" in error_str:
+             logger.error("API Key invalid or permission denied.")
+             
+        return False
+ 
 
 def refine_text_with_gemini(original_text, current_text, user_instruction, context_info,
                             source_lang, target_lang, mode, character_tag=None):

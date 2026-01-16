@@ -128,7 +128,7 @@ class TestControllerSignals:
     def test_status_updated_signal_emits(self):
         """Test status_updated signal can be emitted."""
         from controllers.app_controller import AppController
-        from PyQt6.QtCore import QObject
+        from PySide6.QtCore import QObject
         
         controller = AppController()
         received_messages = []

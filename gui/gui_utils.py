@@ -1,6 +1,6 @@
 
 import os
-from PyQt6.QtGui import QIcon
+from PySide6.QtGui import QIcon
 import renforge_config as config
 from renforge_logger import get_logger
 

@@ -1,6 +1,6 @@
 import pytest
-from PyQt6.QtWidgets import QDockWidget, QTabWidget, QTableWidget
-from PyQt6.QtCore import Qt
+from PySide6.QtWidgets import QDockWidget, QTabWidget, QTableWidget
+from PySide6.QtCore import Qt
 from gui.renforge_gui import RenForgeGUI
 from gui.widgets.preflight_panel import PreflightPanel
 
@@ -59,7 +59,7 @@ class TestPreflightUI:
         # ensuring it's callable is good enough for basic wiring check
         
         # Trigger signal
-        from PyQt6.QtCore import QModelIndex
+        from PySide6.QtCore import QModelIndex
         
         # Create a mock issue
         # We need to simulate double click or signal emit

@@ -6,10 +6,10 @@ logger = get_logger("gui.settings_manager")
 
 try:
 
-    from PyQt6.QtWidgets import QMessageBox, QDialog
-    from PyQt6.QtCore import QTimer 
+    from PySide6.QtWidgets import QMessageBox, QDialog
+    from PySide6.QtCore import QTimer 
 except ImportError:
-    logger.critical("PyQt6 is required for settings management but not found.")
+    logger.critical("PySide6 is required for settings management but not found.")
     sys.exit(1)
 
 import renforge_config as config
@@ -245,8 +245,7 @@ def ensure_gemini_initialized(main_window, force_init=False):
          logger.debug("[ensure_gemini_initialized] Updating model list after initialization.")
          main_window._update_model_list() 
 
-    QTimer.singleShot(50, main_window._sync_model_selection)
-
+    # No need to sync model selection explicitly as MainFluentWindow uses properties
     main_window._update_ui_state()
 
     final_ai_available = not ai.no_ai

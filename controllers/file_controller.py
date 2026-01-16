@@ -11,7 +11,7 @@ Handles file-related business logic:
 from typing import Optional, List, Tuple
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 from renforge_logger import get_logger
 from locales import tr
@@ -43,11 +43,11 @@ class FileController(QObject):
         mode_detection_needed(str, str): Emitted when manual mode selection needed (path, detected)
     """
     
-    file_opened = pyqtSignal(object)  # ParsedFile
-    file_saved = pyqtSignal(str)  # path
-    file_closed = pyqtSignal(str)  # path
-    file_error = pyqtSignal(str)  # message
-    mode_detection_needed = pyqtSignal(str, str)  # path, detected_mode
+    file_opened = Signal(object)  # ParsedFile
+    file_saved = Signal(str)  # path
+    file_closed = Signal(str)  # path
+    file_error = Signal(str)  # message
+    mode_detection_needed = Signal(str, str)  # path, detected_mode
     
     def __init__(
         self, 

@@ -9,7 +9,7 @@ import os
 from renforge_logger import get_logger
 logger = get_logger("controllers.project_controller")
 
-from PyQt6.QtCore import QDir
+from PySide6.QtCore import QDir
 
 import gui.gui_file_manager as file_manager
 import gui.gui_tab_manager as tab_manager

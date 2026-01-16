@@ -336,6 +336,8 @@
   "batch_google_unavailable_net": "Toplu çeviri kullanılamıyor: internet bağlantısı yok.",
   "error_no_network_msg_batch": "Toplu Google Translate için internet bağlantısı gereklidir.",
   "batch_google_unavailable_lib": "Google Translate kullanılamıyor (deep-translator kütüphanesi).",
+  "batch_ai_unavailable_net": "Toplu AI Çeviri kullanılamıyor: internet bağlantısı yok.",
+  "error_no_network_msg_batch_ai": "Toplu AI Çeviri için internet bağlantısı gereklidir.",
   "error_library_not_found_msg_shorter": "'deep-translator' kütüphanesi bulunamadı.\nYüklemek için: pip install deep-translator",
   "batch_no_active_tab": "Toplu çeviri için aktif sekme yok.",
   "batch_no_selected_rows": "Toplu çeviri için lütfen en az bir satır seçin.",

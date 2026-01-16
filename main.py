@@ -18,12 +18,64 @@ elif __file__:
 logger.debug("Current sys.path: " + ", ".join(sys.path[:3]) + "...")
 
 try:
-    from PyQt6.QtWidgets import QApplication, QMessageBox
-    from PyQt6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from PySide6.QtCore import QTimer, qInstallMessageHandler, QtMsgType
     GUI_AVAILABLE = True
+    
+    # =============================================================================
+    # Qt Mesaj Filtresi - CloseButton QSS Uyarıları
+    # =============================================================================
+    # PySide6-Fluent-Widgets'ın dahili stillerinden kaynaklanan bu uyarılar
+    # normalColor/normalBackgroundColor property'leri desteklenmediğinde çıkar.
+    # Bu filtre SADECE bu spesifik uyarıları susturur, diğer tüm Qt mesajları
+    # varsayılan davranışla (stderr) yazdırılır.
+    
+    def _is_qt_filter_enabled() -> bool:
+        """RENFORGE_QT_MSG_FILTER ortam değişkeni kontrolü."""
+        env_val = os.environ.get("RENFORGE_QT_MSG_FILTER", "1").lower().strip()
+        return env_val not in ("0", "false", "no", "off")
+    
+    def _qt_message_filter(msg_type, context, message):
+        """
+        Cerrahi Qt mesaj filtresi.
+        
+        SADECE şu koşulları sağlayan mesajları susturur:
+        1. Mesaj tipi: QtWarningMsg (sadece uyarılar)
+        2. Mesaj içeriği: 'CloseButton' VE ('normalColor' VEYA 'normalBackgroundColor')
+        
+        Diğer TÜM mesajlar (debug, info, warning, critical, fatal) 
+        varsayılan davranışla stderr'e yazdırılır.
+        """
+        # Cerrahi filtre: SADECE QtWarningMsg + CloseButton + normalColor/normalBackgroundColor
+        if msg_type == QtMsgType.QtWarningMsg:
+            if "CloseButton" in message:
+                if "normalColor" in message or "normalBackgroundColor" in message:
+                    return  # Bu spesifik uyarıları sustur
+        
+        # Diğer tüm mesajları varsayılan davranışla yazdır (stderr)
+        # Qt'nin varsayılan handler'ı sys.stderr'e yazar
+        import sys
+        msg_type_str = {
+            QtMsgType.QtDebugMsg: "Debug",
+            QtMsgType.QtInfoMsg: "Info", 
+            QtMsgType.QtWarningMsg: "Warning",
+            QtMsgType.QtCriticalMsg: "Critical",
+            QtMsgType.QtFatalMsg: "Fatal",
+        }.get(msg_type, "Unknown")
+        
+        # Varsayılan Qt davranışını taklit et
+        print(f"{msg_type_str}: {message}", file=sys.stderr)
+    
+    # Filtre aktifse handler'ı kur
+    if _is_qt_filter_enabled():
+        qInstallMessageHandler(_qt_message_filter)
+        logger.debug("Qt message handler installed (surgical filter for CloseButton QSS warnings)")
+    else:
+        logger.debug("Qt message filter disabled via RENFORGE_QT_MSG_FILTER env")
+    
 except ImportError:
-    logger.critical("PyQt6 is required to run RenForge but is not installed.")
-    logger.critical("Please install it: pip install PyQt6")
+    logger.critical("PySide6 is required to run RenForge but is not installed.")
+    logger.critical("Please install it: pip install PySide6")
     sys.exit(1) 
 
 try:

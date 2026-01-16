@@ -44,7 +44,22 @@ class SettingsModel:
     KEY_WINDOW_W = "window_size_w"
     KEY_WINDOW_H = "window_size_h"
     KEY_WINDOW_MAX = "window_maximized"
+    KEY_RECENT_FILES = "recent_files"  # List of recently opened file paths
+    KEY_RECENT_PROJECTS = "recent_projects"  # List of recently opened project paths
     
+    # Session persistence (v2)
+    KEY_OPEN_TABS = "session_open_tabs"  # List of open file paths
+    KEY_ACTIVE_TAB = "session_active_tab"  # Currently active file path
+    
+    # UI Layout persistence
+    KEY_SIDEBAR_COLLAPSED = "ui_sidebar_collapsed"  # bool - sidebar daraltılmış mı
+    KEY_INSPECTOR_VISIBLE = "ui_inspector_visible"  # bool - inspector görünür mü
+    KEY_INSPECTOR_WIDTH = "ui_inspector_width"  # int - inspector genişliği (piksel)
+    
+    # Keyboard Shortcuts
+    KEY_SHORTCUTS = "keyboard_shortcuts"  # Dict[str, str] - action_id -> sequence string
+    KEY_SHORTCUTS_ENABLED = "keyboard_shortcuts_enabled"  # bool - global toggle
+
     def __new__(cls) -> 'SettingsModel':
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -99,6 +114,13 @@ class SettingsModel:
             self.KEY_WINDOW_W: 1200,
             self.KEY_WINDOW_H: 800,
             self.KEY_WINDOW_MAX: False,
+            # UI Layout defaults
+            self.KEY_SIDEBAR_COLLAPSED: False,
+            self.KEY_INSPECTOR_VISIBLE: True,
+            self.KEY_INSPECTOR_WIDTH: 300,
+            # Shortcuts logic
+            self.KEY_SHORTCUTS: {},  # Empty means use manager defaults
+            self.KEY_SHORTCUTS_ENABLED: True,
         }
     
     def _load(self):
@@ -313,6 +335,110 @@ class SettingsModel:
     @window_maximized.setter
     def window_maximized(self, value: bool):
         self.set(self.KEY_WINDOW_MAX, value)
+    
+    # =============================================================================
+    # RECENT FILES & PROJECTS
+    # =============================================================================
+    
+    @property
+    def recent_files(self) -> List[str]:
+        """Get list of recently opened file paths."""
+        return self._settings.get(self.KEY_RECENT_FILES, [])
+    
+    def add_recent_file(self, file_path: str, max_count: int = 20):
+        """Add a file to recents (moves to front if exists)."""
+        recents = self.recent_files.copy()
+        # Remove if exists
+        if file_path in recents:
+            recents.remove(file_path)
+        # Add to front
+        recents.insert(0, file_path)
+        # Limit size
+        recents = recents[:max_count]
+        self.set(self.KEY_RECENT_FILES, recents)
+    
+    def clear_recent_files(self):
+        """Clear recent files list."""
+        self.set(self.KEY_RECENT_FILES, [])
+    
+    @property
+    def recent_projects(self) -> List[str]:
+        """Get list of recently opened project paths."""
+        return self._settings.get(self.KEY_RECENT_PROJECTS, [])
+    
+    def add_recent_project(self, project_path: str, max_count: int = 10):
+        """Add a project to recents (moves to front if exists)."""
+        recents = self.recent_projects.copy()
+        if project_path in recents:
+            recents.remove(project_path)
+        recents.insert(0, project_path)
+        recents = recents[:max_count]
+        self.set(self.KEY_RECENT_PROJECTS, recents)
+
+    # =============================================================================
+    # SESSION PERSISTENCE (v2)
+    # =============================================================================
+    
+    @property
+    def open_tabs(self) -> List[str]:
+        """Get list of open file paths from last session."""
+        return self._settings.get(self.KEY_OPEN_TABS, [])
+    
+    @property
+    def active_tab(self) -> Optional[str]:
+        """Get active file path from last session."""
+        return self._settings.get(self.KEY_ACTIVE_TAB, None)
+    
+    def save_session(self, open_tabs: List[str], active_tab: Optional[str]):
+        """
+        Save current session state (called on app close).
+        
+        Args:
+            open_tabs: List of currently open file paths
+            active_tab: Currently active file path
+        """
+        self.set(self.KEY_OPEN_TABS, open_tabs)
+        self.set(self.KEY_ACTIVE_TAB, active_tab)
+        self.save()
+        logger.debug(f"Session saved: {len(open_tabs)} tabs, active={active_tab}")
+    
+    def clear_session(self):
+        """Clear saved session (after successful restore)."""
+        self.set(self.KEY_OPEN_TABS, [])
+        self.set(self.KEY_ACTIVE_TAB, None)
+
+    # =============================================================================
+    # UI LAYOUT PERSISTENCE
+    # =============================================================================
+    
+    @property
+    def sidebar_collapsed(self) -> bool:
+        """Sidebar daraltılmış durumu."""
+        return self._settings.get(self.KEY_SIDEBAR_COLLAPSED, False)
+    
+    @sidebar_collapsed.setter
+    def sidebar_collapsed(self, value: bool):
+        self.set(self.KEY_SIDEBAR_COLLAPSED, value)
+    
+    @property
+    def inspector_visible(self) -> bool:
+        """Inspector panel görünürlük durumu."""
+        return self._settings.get(self.KEY_INSPECTOR_VISIBLE, True)
+    
+    @inspector_visible.setter
+    def inspector_visible(self, value: bool):
+        self.set(self.KEY_INSPECTOR_VISIBLE, value)
+    
+    @property
+    def inspector_width(self) -> int:
+        """Inspector panel genişliği (piksel)."""
+        return self._settings.get(self.KEY_INSPECTOR_WIDTH, 300)
+    
+    @inspector_width.setter
+    def inspector_width(self, value: int):
+        # Sınırla: 200-500 arası
+        value = max(200, min(500, value))
+        self.set(self.KEY_INSPECTOR_WIDTH, value)
 
     # =============================================================================
     # UTILITY
@@ -326,6 +452,24 @@ class SettingsModel:
     def to_dict(self) -> Dict[str, Any]:
         """Get all settings as a dictionary."""
         return self._settings.copy()
+    
+    @property
+    def keyboard_shortcuts(self) -> Dict[str, str]:
+        """Get stored keyboard shortcuts (action_id -> sequence)."""
+        return self._settings.get(self.KEY_SHORTCUTS, {})
+    
+    @keyboard_shortcuts.setter
+    def keyboard_shortcuts(self, value: Dict[str, str]):
+        self.set(self.KEY_SHORTCUTS, value)
+    
+    @property
+    def keyboard_shortcuts_enabled(self) -> bool:
+        """Are custom keyboard shortcuts enabled?"""
+        return self._settings.get(self.KEY_SHORTCUTS_ENABLED, True)
+    
+    @keyboard_shortcuts_enabled.setter
+    def keyboard_shortcuts_enabled(self, value: bool):
+        self.set(self.KEY_SHORTCUTS_ENABLED, value)
     
     def __repr__(self) -> str:
         return f"SettingsModel(dirty={self._dirty})"

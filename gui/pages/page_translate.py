@@ -67,6 +67,8 @@ class TranslatePage(QWidget):
         # Mini Batch Bar (compact progress bar for batch operations)
         self.mini_batch_bar = MiniBatchBar(self)
         self.mini_batch_bar.cancel_clicked.connect(self._on_mini_bar_cancel)
+        self.mini_batch_bar.show_failed_clicked.connect(self._on_mini_bar_show_failed)
+        self.mini_batch_bar.retry_clicked.connect(self._on_mini_bar_retry)
         layout.addWidget(self.mini_batch_bar)
         
         # Translation table
@@ -250,13 +252,8 @@ class TranslatePage(QWidget):
         self.command_bar_layout = QHBoxLayout()
         self.command_bar_layout.setSpacing(8)
         
-        # Title
-        # title = SubtitleLabel("Çeviri") # Removed title as it's redundant with new bar or we can keep it
-        # self.command_bar_layout.addWidget(title)
-        # self.command_bar_layout.addSpacing(20)
-        
-        # Engine dropdown
-        self.engine_dropdown = DropDownPushButton("Google Translate") # Default
+        # Engine dropdown (left side)
+        self.engine_dropdown = DropDownPushButton("Google Translate")
         self.engine_dropdown.setIcon(FIF.GLOBE)
         
         engine_menu = RoundMenu(parent=self)
@@ -278,45 +275,86 @@ class TranslatePage(QWidget):
         # Separator
         self.command_bar_layout.addSpacing(16)
         
-        # Seçiliyi Çevir
+        # === PRIMARY ACTIONS ===
+        
+        # Seçiliyi Çevir (primary action - visible)
         self.translate_selected_btn = PushButton("Seçiliyi Çevir")
         self.translate_selected_btn.setIcon(FIF.EDIT)
         self.translate_selected_btn.clicked.connect(self._on_translate_selected)
         self.command_bar_layout.addWidget(self.translate_selected_btn)
         
-        # Toplu Çevir
+        # Toplu Çevir (primary action - always visible)
         self.batch_translate_btn = PushButton("Toplu Çevir")
         self.batch_translate_btn.setIcon(FIF.SYNC)
         self.batch_translate_btn.clicked.connect(self._on_batch_translate)
         self.command_bar_layout.addWidget(self.batch_translate_btn)
         
-        # Separator before destructive/file actions
-        self.command_bar_layout.addSpacing(16)
-        
-        # Kaydet
-        self.save_btn = PushButton("Kaydet")
-        self.save_btn.setIcon(FIF.SAVE)
-        self.save_btn.clicked.connect(self._on_save)
-        self.command_bar_layout.addWidget(self.save_btn)
-        
-        # Farklı Kaydet
-        self.save_as_btn = PushButton("Farklı Kayd.")
-        self.save_as_btn.setIcon(FIF.SAVE_AS)
-        self.save_as_btn.clicked.connect(self._on_save_as)
-        self.command_bar_layout.addWidget(self.save_as_btn)
-        
-        # İptal
+        # İptal (visible only when batch running)
         self.cancel_btn = PushButton("İptal")
         self.cancel_btn.setIcon(FIF.CLOSE)
         self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setVisible(False)  # Hidden by default
         self.cancel_btn.clicked.connect(self._on_cancel)
         self.command_bar_layout.addWidget(self.cancel_btn)
         
+        # Separator
+        self.command_bar_layout.addSpacing(8)
+        
+        # Kaydet ▼ (menu button with save options)
+        self.save_menu_btn = DropDownPushButton("Kaydet")
+        self.save_menu_btn.setIcon(FIF.SAVE)
+        
+        save_menu = RoundMenu(parent=self)
+        self.save_action = Action(FIF.SAVE, "Kaydet")
+        self.save_action.triggered.connect(self._on_save)
+        self.save_as_action = Action(FIF.SAVE_AS, "Farklı Kaydet...")
+        self.save_as_action.triggered.connect(self._on_save_as)
+        
+        save_menu.addAction(self.save_action)
+        save_menu.addAction(self.save_as_action)
+        
+        self.save_menu_btn.setMenu(save_menu)
+        self.command_bar_layout.addWidget(self.save_menu_btn)
+        
+        # More menu (…) for secondary actions
+        self.more_menu_btn = DropDownPushButton()
+        self.more_menu_btn.setIcon(FIF.MORE)
+        self.more_menu_btn.setToolTip("Diğer Eylemler")
+        self.more_menu_btn.setFixedWidth(40)
+        
+        more_menu = RoundMenu(parent=self)
+        
+        # Inspector shortcuts
+        self.open_log_action = Action(FIF.DOCUMENT, "Log'u Aç")
+        self.open_log_action.triggered.connect(self._on_open_log)
+        more_menu.addAction(self.open_log_action)
+        
+        self.open_batch_detail_action = Action(FIF.VIEW, "Toplu İşlem Detayı")
+        self.open_batch_detail_action.triggered.connect(self._on_open_batch_detail)
+        more_menu.addAction(self.open_batch_detail_action)
+        
+        self.more_menu_btn.setMenu(more_menu)
+        self.command_bar_layout.addWidget(self.more_menu_btn)
+        
         self.command_bar_layout.addStretch()
         
-        # Selection info
+        # Selection info (right side)
         self.selection_label = BodyLabel("0 satır seçili")
         self.command_bar_layout.addWidget(self.selection_label)
+    
+    def _on_open_log(self):
+        """Open Log tab in Inspector."""
+        main_window = self.window()
+        if hasattr(main_window, 'inspector'):
+            main_window.inspector.setVisible(True)
+            main_window.inspector.tabs.setCurrentIndex(2)  # Log tab
+    
+    def _on_open_batch_detail(self):
+        """Open Batch tab in Inspector."""
+        main_window = self.window()
+        if hasattr(main_window, 'inspector'):
+            main_window.inspector.setVisible(True)
+            main_window.inspector.tabs.setCurrentIndex(1)  # Batch tab
     
     # =========================================================================
     # ACTION HANDLERS
@@ -440,6 +478,37 @@ class TranslatePage(QWidget):
                 main_window.batch_controller.cancel()
                 logger.info("Cancel requested via MiniBatchBar")
     
+    def _on_mini_bar_show_failed(self):
+        """Handle request to show failed items."""
+        # 1. Switch filter to 'error' (Hatalı)
+        if hasattr(self.table_widget, 'set_filter'):
+            self.table_widget.set_filter("error")
+        
+        if hasattr(self.table_widget, 'scroll_to_top'):
+            self.table_widget.scroll_to_top()
+            
+    def _on_mini_bar_retry(self):
+        """Handle request to retry failed items."""
+        main_window = self.window()
+        if hasattr(main_window, 'batch_controller') and main_window.batch_controller:
+            logger.info("Retry Failed requested via MiniBatchBar")
+            main_window.batch_controller.retry_failed_last_run()
+            
+        logger.info("Switched to 'error' filter via MiniBatchBar")
+    
+    def select_line(self, line_num):
+        """Select a line in the table."""
+        if hasattr(self, 'table_widget'):
+             self.table_widget.select_line(line_num)
+             
+    def select_row_by_index(self, row_index: int):
+        """
+        Select row by internal 0-based row index.
+        Wrapper for table_widget.select_row_by_index.
+        """
+        if hasattr(self, 'table_widget'):
+            self.table_widget.select_row_by_index(row_index)
+             
     def _on_selection_changed(self, row_data: dict):
         """Handle table selection changed."""
         # Merkezi state güncelleme
@@ -534,27 +603,26 @@ class TranslatePage(QWidget):
         
         # Seçiliyi Çevir: selection > 0 VE batch çalışmıyor
         translate_enabled = selection_count > 0 and not batch_running
-        self.translate_selected_btn.setEnabled(translate_enabled)
+        if hasattr(self, 'translate_selected_btn'):
+            self.translate_selected_btn.setEnabled(translate_enabled)
         
-        # Toplu Çevir: dosya açık VE satır var VE batch çalışmıyor
-        # row_count kontrolünü kaldır - dosya açıksa buton aktif olsun
+        # Toplu Çevir: dosya açık VE batch çalışmıyor
         batch_enabled = has_file and not batch_running
         self.batch_translate_btn.setEnabled(batch_enabled)
         
-        # İptal: sadece batch çalışırken
+        # İptal: visible + enabled only when batch running
+        self.cancel_btn.setVisible(batch_running)
         self.cancel_btn.setEnabled(batch_running)
         
-        # Kaydet: dosya açık
-        self.save_btn.setEnabled(has_file)
-        
-        # Farklı Kaydet: dosya açık
-        self.save_as_btn.setEnabled(has_file)
+        # Kaydet menu: enabled when file is open
+        if hasattr(self, 'save_menu_btn'):
+            self.save_menu_btn.setEnabled(has_file)
         
         # Selection label güncelle
         self.selection_label.setText(f"{selection_count} satır seçili")
         
         if trace:
-            logger.info(f"[UI_STATE_TRACE] Final: translate_btn={translate_enabled}, "
+            logger.info(f"[UI_STATE_TRACE] Final: translate_action={translate_enabled}, "
                        f"batch_btn={batch_enabled}, cancel_btn={batch_running}")
     
     def get_selected_rows(self) -> list:

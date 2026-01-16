@@ -3,16 +3,17 @@
 TranslationFilterProxyModel - Filtreleme ve Sıralama
 
 Bu proxy model, ana modelin üzerine filtreleme ve sıralama ekler.
-Orijinal veri değişmez, sadece görünüm filtrelenir.
+RowStatus modelini kullanarak esnek filtreleme sağlar.
 """
 
 from typing import Optional
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     Qt, QSortFilterProxyModel, QModelIndex
 )
 
 from renforge_logger import get_logger
+from gui.models.row_data import RowStatus
 
 logger = get_logger("gui.models.filter_proxy")
 
@@ -24,20 +25,19 @@ class TranslationFilterProxyModel(QSortFilterProxyModel):
     ÖZELLİKLER:
     - Case-insensitive arama
     - Sütun bazlı filtreleme
-    - Status filtresi (Pending/Done/Failed)
+    - Status filtresi (RowStatus enum tabanlı)
     - Doğal sıralama
-    
-    ROW ID UYARISI:
-    Proxy sıralaması satır indekslerini değiştirir!
-    Güncelleme yaparken MUTLAKA row_id kullanın, index DEĞİL.
     """
     
     # Filter tipleri
     FILTER_ALL = "all"
-    FILTER_MODIFIED = "changed"
-    FILTER_FAILED = "ai_fail"
-    FILTER_WARNING = "ai_warn"
-    FILTER_EMPTY = "empty"
+    FILTER_UNTRANSLATED = "untranslated"
+    FILTER_TRANSLATED = "translated"
+    FILTER_MODIFIED = "modified"
+    FILTER_APPROVED = "approved"
+    FILTER_ERROR = "error"
+    FILTER_FLAGGED = "flagged"
+    FILTER_PROBLEMS = "problems" # Untranslated + Error + Flagged
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,32 +50,18 @@ class TranslationFilterProxyModel(QSortFilterProxyModel):
         # Case-insensitive arama
         self.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         
-        # Dinamik sıralama KAPALI - veri değiştiğinde yeniden sıralama YAPILMAZ
-        # Bu, dataChanged sinyali geldiğinde satırların karışmasını önler
+        # Dinamik sıralama KAPALI
         self.setDynamicSortFilter(False)
-        
-        # Recursive filtreleme (tree için, burada kullanılmıyor)
         self.setRecursiveFilteringEnabled(False)
     
     def set_search_text(self, text: str, column: int = -1) -> None:
-        """
-        Arama metni ayarla.
-        
-        Args:
-            text: Aranacak metin
-            column: Aranacak sütun (-1 = tüm sütunlar)
-        """
+        """Arama metni ayarla."""
         self._search_text = text.lower()
         self._search_column = column
         self.invalidateFilter()
     
     def set_status_filter(self, status: str) -> None:
-        """
-        Status filtresi ayarla.
-        
-        Args:
-            status: FILTER_ALL, FILTER_MODIFIED, FILTER_FAILED, FILTER_WARNING, FILTER_EMPTY
-        """
+        """Status filtresi ayarla."""
         self._status_filter = status
         self.invalidateFilter()
     
@@ -87,12 +73,7 @@ class TranslationFilterProxyModel(QSortFilterProxyModel):
         self.invalidateFilter()
     
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
-        """
-        Satırın filtreyi geçip geçmediğini kontrol et.
-        
-        PERFORMANS: Bu metod her satır için çağrılır.
-        Ağır işlemlerden kaçının.
-        """
+        """Satırın filtreyi geçip geçmediğini kontrol et."""
         model = self.sourceModel()
         if not model:
             return True
@@ -109,31 +90,44 @@ class TranslationFilterProxyModel(QSortFilterProxyModel):
         
         return True
     
-    def _check_status_filter(self, model, row: int) -> bool:
-        """Status filtresi kontrolü."""
-        from gui.models.translation_table_model import TableColumn
+    def _check_status_filter(self, model, row_idx: int) -> bool:
+        """Status filtresi kontrolü - Modelden RowData alarak."""
         
-        if self._status_filter == self.FILTER_MODIFIED:
-            # Modified sütunu "*" içeriyor mu?
-            idx = model.index(row, TableColumn.MODIFIED)
-            return model.data(idx, Qt.ItemDataRole.DisplayRole) == "*"
+        # Eğer model get_row_data metoduna sahipse direkt kullan
+        # (TranslationTableModel bu metoda sahip)
+        if hasattr(model, 'get_row_data'):
+            row_data = model.get_row_data(row_idx)
+            if not row_data:
+                return False
+                
+            status = row_data.status
+            is_flagged = row_data.is_flagged
+            
+            if self._status_filter == self.FILTER_UNTRANSLATED:
+                return status == RowStatus.UNTRANSLATED
+                
+            elif self._status_filter == self.FILTER_TRANSLATED:
+                return status == RowStatus.TRANSLATED
+                
+            elif self._status_filter == self.FILTER_MODIFIED:
+                return status == RowStatus.MODIFIED
+                
+            elif self._status_filter == self.FILTER_APPROVED:
+                return status == RowStatus.APPROVED
+                
+            elif self._status_filter == self.FILTER_ERROR:
+                return status == RowStatus.ERROR
+                
+            elif self._status_filter == self.FILTER_FLAGGED:
+                return is_flagged
+                
+            elif self._status_filter == self.FILTER_PROBLEMS:
+                # Untranslated OR Error OR Flagged
+                return (status in (RowStatus.UNTRANSLATED, RowStatus.ERROR)) or is_flagged
+            
+            return True
         
-        elif self._status_filter == self.FILTER_FAILED:
-            # Status sütunu fail emoji içeriyor mu?
-            idx = model.index(row, TableColumn.STATUS)
-            return model.data(idx, Qt.ItemDataRole.DisplayRole) == "🔴"
-        
-        elif self._status_filter == self.FILTER_WARNING:
-            idx = model.index(row, TableColumn.STATUS)
-            return model.data(idx, Qt.ItemDataRole.DisplayRole) == "⚠️"
-        
-        elif self._status_filter == self.FILTER_EMPTY:
-            # Editable sütunu boş mu?
-            idx = model.index(row, TableColumn.EDITABLE)
-            text = model.data(idx, Qt.ItemDataRole.DisplayRole) or ""
-            return not text.strip()
-        
-        return True
+        return True # Fallback
     
     def _check_search_filter(self, model, row: int) -> bool:
         """Metin araması kontrolü."""
@@ -152,11 +146,9 @@ class TranslationFilterProxyModel(QSortFilterProxyModel):
                     return True
             return False
     
-    def get_source_row_id(self, proxy_row: int) -> Optional[int]:
+    def get_source_row_id(self, proxy_row: int) -> Optional[str]:
         """
-        Proxy satır indeksinden kaynak row_id'yi al.
-        
-        Güncelleme yaparken bu metod kullanılmalı!
+        Proxy satır indeksinden kaynak row_id'yi al (str).
         """
         proxy_index = self.index(proxy_row, 0)
         source_index = self.mapToSource(proxy_index)
@@ -170,4 +162,9 @@ class TranslationFilterProxyModel(QSortFilterProxyModel):
     
     def get_source_row_ids(self, proxy_rows: list) -> list:
         """Birden fazla proxy satırı için kaynak row_id'leri al."""
-        return [self.get_source_row_id(row) for row in proxy_rows if self.get_source_row_id(row) is not None]
+        ids = []
+        for row in proxy_rows:
+            rid = self.get_source_row_id(row)
+            if rid is not None:
+                ids.append(rid)
+        return ids

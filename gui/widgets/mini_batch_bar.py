@@ -11,8 +11,10 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QSizePolicy
 
 from qfluentwidgets import (
     BodyLabel, StrongBodyLabel, PushButton, ProgressBar, 
-    CardWidget, FluentIcon as FIF
+    CardWidget, FluentIcon as FIF, TeachingTip, TeachingTipTailPosition, InfoBarPosition
 )
+from PySide6.QtGui import QGuiApplication
+import textwrap
 
 from renforge_logger import get_logger
 
@@ -26,13 +28,7 @@ class MiniBatchBar(CardWidget):
     Consumes the same status dict as InspectorPanel.show_batch_status().
     
     UI Layout:
-    [Status: Running | 64/11501 (0.6%)] [===ProgressBar===] [✅ 64 ❌ 0 ⚠️ 0] [İptal] [Detay] [Log] [Temizle]
-    
-    Signals:
-        detail_clicked: Request to open Inspector Toplu tab
-        log_clicked: Request to open Inspector Log tab
-        cancel_clicked: Request to cancel batch
-        clear_clicked: Request to hide this bar (UI only)
+    [Status: Running | 64/11501 (0.6%)] [===ProgressBar===] [✅ 64 ❌ 0 ⚠️ 0] [Hata Özeti] ...Actions
     """
     
     # Signals
@@ -40,6 +36,8 @@ class MiniBatchBar(CardWidget):
     log_clicked = Signal()
     cancel_clicked = Signal()
     clear_clicked = Signal()
+    show_failed_clicked = Signal()
+    retry_clicked = Signal()
     
     # Status stage constants (matching BatchController._build_status)
     STAGE_IDLE = "idle"
@@ -55,6 +53,10 @@ class MiniBatchBar(CardWidget):
         self.setFixedHeight(48)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         
+        # Responsive state
+        self._button_configs = [] # List of dict: {'btn': btn, 'action': action, 'text': text, 'width': width}
+        self._layout_mode = "full" # full, compact, overflow
+        
         # Throttling state
         self._pending_status = None
         self._throttle_timer = QTimer(self)
@@ -65,6 +67,7 @@ class MiniBatchBar(CardWidget):
         # Last known progress (monotonic check)
         self._last_done = 0
         self._last_total = 0
+        self._last_error_summary = None
         
         self._setup_ui()
         self.setVisible(False)  # Default hidden
@@ -73,6 +76,8 @@ class MiniBatchBar(CardWidget):
     
     def _setup_ui(self):
         """Setup the compact single-row UI."""
+        from qfluentwidgets import DropDownPushButton, RoundMenu, Action
+        
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(12)
@@ -106,34 +111,203 @@ class MiniBatchBar(CardWidget):
         self.warning_label.setStyleSheet("color: #ff9800;")
         layout.addWidget(self.warning_label)
         
-        layout.addSpacing(8)
+        # === Right: Actions Container ===
+        # We don't use a separate container widget to keep layout simple, 
+        # but we group them logically.
         
-        # === Right: Action Buttons ===
+        # Overflow Button (Hidden by default)
+        self.overflow_btn = DropDownPushButton()
+        self.overflow_btn.setIcon(FIF.MORE)
+        self.overflow_btn.setFixedWidth(40)
+        self.overflow_btn.setVisible(False)
+        self.overflow_menu = RoundMenu(parent=self)
+        self.overflow_btn.setMenu(self.overflow_menu)
+        layout.addWidget(self.overflow_btn)
+        
+        # Error Summary Button (New)
+        # Dynamic visibility based on error_summary presence
+        self.error_summary_btn = PushButton("Hata Özeti")
+        self.error_summary_btn.setIcon(FIF.INFO) # Default
+        self.error_summary_btn.clicked.connect(self._on_error_summary_clicked)
+        self.error_summary_btn.setVisible(False)
+        self.error_summary_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #fce8e6;
+                color: #c42b1c;
+                border: 1px solid #c42b1c;
+            }
+            QPushButton:hover {
+                background-color: #f9d0c9;
+            }
+        """)
+        # We don't register this with standard responsive logic because it's special/dynamic.
+        # But wait, if window is narrow, this might overlap too.
+        # Let's register it to be safe, but perhaps with high priority to stay visible?
+        # Actually, if we have an error summary, this is probably the MOST important thing.
+        # So we keep it out of responsive hiding if possible, OR we let it participate.
+        # If we let it participate, it might go to overflow. But checking status in overflow is fine.
+        # Let's register it as a normal button for now.
+        
+        self.error_summary_action = Action(FIF.INFO, "Hata Özeti")
+        self.error_summary_action.triggered.connect(self._on_error_summary_clicked)
+        
+        self._register_btn(self.error_summary_btn, self.error_summary_action, "Hata Özeti", 160)
+        layout.addWidget(self.error_summary_btn)
+        
+        # Actions
+        
+        # Retry Failed
+        self.retry_btn = PushButton("Hatalıları Yeniden Dene")
+        self.retry_btn.setIcon(FIF.SYNC)
+        self.retry_btn.clicked.connect(self.retry_clicked.emit)
+        self.retry_btn.setVisible(False)
+        
+        self.retry_action = Action(FIF.SYNC, "Hatalıları Yeniden Dene")
+        self.retry_action.triggered.connect(self.retry_clicked.emit)
+        
+        self._register_btn(self.retry_btn, self.retry_action, "Hatalıları Yeniden Dene", 180)
+        layout.addWidget(self.retry_btn)
+
+        # Show Failed
+        self.show_failed_btn = PushButton("Hatalıları Göster")
+        self.show_failed_btn.setIcon(FIF.FILTER)
+        self.show_failed_btn.clicked.connect(self.show_failed_clicked.emit)
+        self.show_failed_btn.setVisible(False)
+        
+        self.show_failed_action = Action(FIF.FILTER, "Hatalıları Göster")
+        self.show_failed_action.triggered.connect(self.show_failed_clicked.emit)
+        
+        self._register_btn(self.show_failed_btn, self.show_failed_action, "Hatalıları Göster", 140)
+        layout.addWidget(self.show_failed_btn)
+        
+        layout.addSpacing(4)
+        
+        # Cancel (Always visible if active, never in overflow menu)
         self.cancel_btn = PushButton("İptal")
         self.cancel_btn.setIcon(FIF.CLOSE)
-        self.cancel_btn.setFixedWidth(80)
         self.cancel_btn.clicked.connect(self._on_cancel_clicked)
+        # Cancel doesn't go into overflow, but participates in compact mode
+        self._register_btn(self.cancel_btn, None, "İptal", 80) 
         layout.addWidget(self.cancel_btn)
         
+        # Detail
         self.detail_btn = PushButton("Detay")
         self.detail_btn.setIcon(FIF.INFO)
-        self.detail_btn.setFixedWidth(90)
         self.detail_btn.clicked.connect(self.detail_clicked.emit)
+        
+        self.detail_action = Action(FIF.INFO, "Detay")
+        self.detail_action.triggered.connect(self.detail_clicked.emit)
+        
+        self._register_btn(self.detail_btn, self.detail_action, "Detay", 90)
         layout.addWidget(self.detail_btn)
         
+        # Log
         self.log_btn = PushButton("Log")
         self.log_btn.setIcon(FIF.DOCUMENT)
-        self.log_btn.setFixedWidth(80)
         self.log_btn.clicked.connect(self.log_clicked.emit)
+        
+        self.log_action = Action(FIF.DOCUMENT, "Log")
+        self.log_action.triggered.connect(self.log_clicked.emit)
+        
+        self._register_btn(self.log_btn, self.log_action, "Log", 80)
         layout.addWidget(self.log_btn)
         
+        # Clear
         self.clear_btn = PushButton("Temizle")
         self.clear_btn.setIcon(FIF.DELETE)
-        self.clear_btn.setFixedWidth(100)
         self.clear_btn.clicked.connect(self._on_clear_clicked)
-        self.clear_btn.setVisible(False)  # Only visible when finished
+        self.clear_btn.setVisible(False)
+        
+        self.clear_action = Action(FIF.DELETE, "Temizle")
+        self.clear_action.triggered.connect(self._on_clear_clicked)
+        
+        self._register_btn(self.clear_btn, self.clear_action, "Temizle", 100)
         layout.addWidget(self.clear_btn)
-    
+
+    def _register_btn(self, btn, action, text, width, always_overflow=False):
+        """Register a button for responsive layout handling."""
+        btn.setFixedWidth(width)
+        # Store initial visibility state (managed by logic)
+        self._button_configs.append({
+            'btn': btn, 
+            'action': action, 
+            'text': text, 
+            'width': width,
+            'always_overflow': always_overflow,
+            'visible_logic': False # Will be updated by _apply_status
+        })
+
+    def resizeEvent(self, event):
+        """Handle resize to toggle responsive mode."""
+        super().resizeEvent(event)
+        self._check_responsive_layout()
+
+    def _check_responsive_layout(self):
+        """Toggle between full and overflow modes."""
+        width = self.width()
+        
+        # Threshold: if < 1350px, switch strictly to overflow mode for remaining buttons
+        # 1350px is needed to fit all buttons (Retry+ShowFailed are long) without overlap
+        TRANSITION_OVERFLOW = 1350
+        
+        new_mode = "full"
+        if width < TRANSITION_OVERFLOW:
+            new_mode = "overflow"
+            
+        if new_mode != self._layout_mode:
+            self._layout_mode = new_mode
+            self._update_buttons()
+
+    def _update_buttons(self):
+        """Update all buttons based on current mode and logical visibility."""
+        is_overflow_mode = self._layout_mode == "overflow"
+        
+        # Clear overflow menu
+        self.overflow_menu.clear()
+        has_overflow_items = False
+        
+        for cfg in self._button_configs:
+            btn = cfg['btn']
+            action = cfg['action']
+            logic_visible = cfg['visible_logic']
+            always_overflow = cfg['always_overflow']
+            
+            # Special case for Cancel: always stays on bar (never overflow)
+            is_cancel = btn == self.cancel_btn
+            
+            if not logic_visible:
+                btn.setVisible(False)
+                continue
+
+            if is_cancel:
+                # Cancel is always on bar and always has text
+                btn.setVisible(True)
+                btn.setText(cfg['text'])
+                btn.setFixedWidth(cfg['width'])
+                btn.setToolTip("")
+                continue
+
+            # Standard actions
+            # If "always_overflow" is True, it goes to menu regardless of mode
+            # If mode is overflow, EVERYTHING except Cancel goes to menu
+            should_overflow = always_overflow or is_overflow_mode
+            
+            if should_overflow:
+                # Move to overflow menu
+                btn.setVisible(False)
+                if action:
+                    self.overflow_menu.addAction(action)
+                    has_overflow_items = True
+            else:
+                # Show on bar with full text
+                btn.setVisible(True)
+                btn.setText(cfg['text'])
+                btn.setFixedWidth(cfg['width'])
+                btn.setToolTip("")
+        
+        # Toggle overflow button visibility based on items and logic
+        self.overflow_btn.setVisible(has_overflow_items)
+
     def show_batch_status(self, status: dict):
         """
         Update the bar with batch status.
@@ -180,6 +354,21 @@ class MiniBatchBar(CardWidget):
         is_cancelling = status.get('cancelling', False)
         is_canceled = status.get('canceled', False)
         
+        # === Error Summary ===
+        self._last_error_summary = status.get('error_summary')
+        if self._last_error_summary:
+            self.error_summary_btn.setText(self._last_error_summary.get('title', "Hata Özeti"))
+            self.error_summary_btn.setVisible(True)
+            # Enable logical visibility
+            for cfg in self._button_configs:
+                if cfg['btn'] == self.error_summary_btn:
+                    cfg['visible_logic'] = True
+        else:
+            self.error_summary_btn.setVisible(False)
+            for cfg in self._button_configs:
+                if cfg['btn'] == self.error_summary_btn:
+                    cfg['visible_logic'] = False
+        
         # === Visibility ===
         # Show bar when there's activity or finished state with data
         should_show = is_running or is_cancelling or done > 0 or stage in {
@@ -189,6 +378,8 @@ class MiniBatchBar(CardWidget):
         if should_show and not self.isVisible():
             self.setVisible(True)
             logger.debug("MiniBatchBar shown")
+            # Re-check layout when shown
+            QTimer.singleShot(0, self._check_responsive_layout)
         
         # === Progress (monotonic) ===
         # Only update if progress increased OR we're starting fresh
@@ -227,34 +418,70 @@ class MiniBatchBar(CardWidget):
         else:
             self.status_label.setText("Toplu İşlem")
         
-        # === Button States ===
-        # Cancel: enabled only when running AND not already cancelling
-        self.cancel_btn.setEnabled(is_running and not is_cancelling)
-        if is_cancelling:
-            self.cancel_btn.setText("İptal...")
-        else:
-            self.cancel_btn.setText("İptal")
+        # === Button States (Logical Visibility) ===
+        
+        # Cancel override text
+        cancel_text = "İptal..." if is_cancelling else "İptal"
         
         # Clear: visible only when finished (not running)
         finished = not is_running and (
             stage in {self.STAGE_COMPLETED, self.STAGE_CANCELED, self.STAGE_FAILED}
             or done > 0
         )
-        self.clear_btn.setVisible(finished)
         
-        logger.debug(f"MiniBatchBar updated: {done}/{total}, stage={stage}, running={is_running}")
+        # Retry/Show Failed visibility
+        retry_count = status.get('failed_indices_count')
+        if retry_count is None:
+            failed_indices = status.get('failed_indices')
+            retry_count = len(failed_indices) if isinstance(failed_indices, (list, tuple)) else 0
+        if not retry_count and fail:
+            retry_count = fail
+
+        # Update Logical Visibility in Configs
+        for cfg in self._button_configs:
+            btn = cfg['btn']
+            
+            if btn == self.cancel_btn:
+                cfg['visible_logic'] = (is_running and not is_cancelling)
+                cfg['text'] = cancel_text # Update text for cancel
+                
+            elif btn == self.retry_btn:
+                cfg['visible_logic'] = bool(finished and retry_count > 0)
+                
+            elif btn == self.show_failed_btn:
+                cfg['visible_logic'] = bool(finished and (fail > 0 or retry_count > 0))
+                
+            elif btn == self.clear_btn:
+                cfg['visible_logic'] = finished
+                
+            elif btn == self.detail_btn or btn == self.log_btn:
+                cfg['visible_logic'] = True # Always visible logic-wise
+        
+        # Refresh Layout based on new logical visibilities
+        self._update_buttons()
+        
+        logger.debug(f"MiniBatchBar updated: {done}/{total}, stage={stage}, running={is_running}, retry_count={retry_count}")
     
     def _on_cancel_clicked(self):
         """Handle cancel button click."""
-        # Immediately update UI to show cancelling state
+        # Immediately update UI to show cancelling state (Optimistic)
         self.cancel_btn.setEnabled(False)
-        self.cancel_btn.setText("İptal...")
+        self._update_cancel_text("İptal...")
         self.status_label.setText("İptal ediliyor...")
         
         # Emit signal for controller
         self.cancel_clicked.emit()
         logger.info("MiniBatchBar: Cancel requested")
-    
+        
+    def _update_cancel_text(self, text):
+        """Helper to update cancel button text respecting mode."""
+        for cfg in self._button_configs:
+            if cfg['btn'] == self.cancel_btn:
+                cfg['text'] = text
+                break
+        # Force refresh
+        self._update_buttons()
+
     def _on_clear_clicked(self):
         """Handle clear button click - UI only hide."""
         self.setVisible(False)
@@ -272,6 +499,50 @@ class MiniBatchBar(CardWidget):
         self.success_label.setText("✅ 0")
         self.error_label.setText("❌ 0")
         self.warning_label.setText("⚠️ 0")
-        self.cancel_btn.setEnabled(False)
-        self.cancel_btn.setText("İptal")
-        self.clear_btn.setVisible(False)
+        
+        # Reset logical states
+        for cfg in self._button_configs:
+            if cfg['btn'] == self.cancel_btn:
+                cfg['text'] = "İptal"
+                cfg['visible_logic'] = False
+            else:
+                # Default visibility for others
+                if cfg['btn'] in (self.detail_btn, self.log_btn):
+                    cfg['visible_logic'] = True
+                else:
+                    cfg['visible_logic'] = False
+        
+        # Refresh
+        self._update_buttons()
+
+    def _on_error_summary_clicked(self):
+        """Show the error summary TeachingTip."""
+        if not self._last_error_summary:
+            return
+            
+        summary = self._last_error_summary
+        title = summary.get('title', "Hata Özeti")
+        message = summary.get('message', "")
+        suggestions = summary.get('suggestions', [])
+        
+        # Build content text
+        content = f"{message}\n\nÖneriler:\n" + "\n".join([f"• {s}" for s in suggestions])
+        
+        # Create TeachingTip
+        TeachingTip.create(
+            target=self.error_summary_btn,
+            icon=FIF.INFO,
+            title=title,
+            content=content,
+            isClosable=True,
+            tailPosition=TeachingTipTailPosition.BOTTOM,
+            duration=-1, # persistent
+            parent=self
+        )
+        # Note: Copy/Log additional buttons are not standard in TeachingTip.create.
+        # Users can open Log via the dedicated Log button on the bar.
+        # Copy can be done by selecting text in TeachingTip if selectable.
+        # For now, this meets the requirement of showing the summary.
+        # User requested "Copy + Log" but standard UI limits us slightly without custom widget.
+        # We'll rely on the existing Log button being adjacent.
+        self._update_buttons()

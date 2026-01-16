@@ -1,19 +1,19 @@
 
 import os
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
                              QProgressBar, QCheckBox, QMessageBox, QMenu, QDockWidget)
-from PyQt6.QtCore import Qt, pyqtSignal, QThread
-from PyQt6.QtGui import QAction, QIcon
+from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtGui import QAction, QIcon
 
 from renforge_localization import tr
 from gui.gui_utils import get_icon
 from core.preflight_engine import PreflightEngine, PreflightIssue
 
 class ScanWorker(QThread):
-    progress = pyqtSignal(int, int, str)
-    finished = pyqtSignal(list) # list of issues
-    error = pyqtSignal(str)
+    progress = Signal(int, int, str)
+    finished = Signal(list) # list of issues
+    error = Signal(str)
     
     def __init__(self, engine):
         super().__init__()
@@ -32,7 +32,7 @@ class ScanWorker(QThread):
 class PreflightPanel(QWidget):
     # Signal requested to jump to file/line
     # (file_path, line_number)
-    navigate_requested = pyqtSignal(str, int)
+    navigate_requested = Signal(str, int)
     
     def __init__(self, parent=None):
         super().__init__(parent)
