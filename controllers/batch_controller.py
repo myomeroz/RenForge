@@ -56,6 +56,7 @@ class BatchController(QObject):
         self._last_failed_indices = []
         self._last_run_context = {}
         self._last_error_summary = None # Stores smart error analysis result
+        self._batch_start_time = None  # For duration measurement (Stage 8)
     
     # =========================================================================
     # CENTRALIZED STATE MANAGEMENT
@@ -178,15 +179,18 @@ class BatchController(QObject):
             'total': self._total_items,
             'processed': self._total_processed,  # Alias
             
-            # Success/failure counts
+            # Success/failure counts - USE _structured_errors as single source of truth
             'ok': self._success_count,
             'success': self._success_count,  # Alias
-            'failed': len(self._errors),
+            'failed': len(self._structured_errors),
             'skipped': 0,  # Reserved for future use
-            'errors': len(self._errors),  # Alias
+            'errors': len(self._structured_errors),  # Alias
             'warnings': len(self._warnings),
             'failed_indices_count': len(self._last_failed_indices),
             'can_retry_failed': (not self._is_running) and (len(self._last_failed_indices) > 0),
+            
+            # Structured errors list for Inspector navigation
+            'structured_errors': self._structured_errors.copy(),
             
             # State flags - ALWAYS INCLUDED
             'is_running': self._is_running,
@@ -283,6 +287,9 @@ class BatchController(QObject):
         # Reset cancelled flag AFTER status emit so UI shows correct state
         self._cancelled = False
         
+        # Record run to history (Stage 8)
+        self._record_run_to_history(results, was_canceled)
+        
         logger.info(f"[BatchController] handle_finished: stage={final_stage}, success={self._success_count}")
     
     def start_batch(self, total_items: int, context: dict = None):
@@ -320,6 +327,10 @@ class BatchController(QObject):
             # context is already passed from retry_failed_last_run
         
         self._total_items = total_items
+        
+        # Capture start time for duration measurement (Stage 8)
+        import time
+        self._batch_start_time = time.perf_counter()
         
         # Use centralized state management
         self._set_running(True, reason=f"start_batch({total_items})")
@@ -926,6 +937,44 @@ class BatchController(QObject):
             # Mark file as modified
             current_file_data.is_modified = True
         
+        # SYNC TO MODEL: Set ERROR status on failed rows (AFTER table sync!)
+        if self._structured_errors:
+            try:
+                # Get current table model
+                if hasattr(self.main, 'translate_page') and self.main.translate_page:
+                    table_widget = getattr(self.main.translate_page, 'table_widget', None)
+                    if table_widget and hasattr(table_widget, 'table_view'):
+                        proxy_model = table_widget.table_view.model()
+                        model = proxy_model
+                        if hasattr(proxy_model, 'sourceModel'):
+                            model = proxy_model.sourceModel()
+                        
+                        if hasattr(model, '_rows'):
+                            from gui.models.row_data import RowStatus
+                            
+                            synced_count = 0
+                            for err in self._structured_errors:
+                                row_id = err.get('row_id')
+                                logger.debug(f"[BatchController] Error sync: row_id={row_id}, total_rows={len(model._rows)}")
+                                if row_id is not None and 0 <= row_id < len(model._rows):
+                                    row = model._rows[row_id]
+                                    row.status = RowStatus.ERROR
+                                    row.error_message = err.get('message', 'Error')
+                                    synced_count += 1
+                                    logger.info(f"[BatchController] Set row {row_id} to ERROR status")
+                            
+                            # Notify view of changes
+                            model.layoutChanged.emit()
+                            
+                            # CRITICAL: Invalidate filter proxy so it re-evaluates rows
+                            if hasattr(proxy_model, 'invalidateFilter'):
+                                proxy_model.invalidateFilter()
+                                logger.debug("[BatchController] Filter invalidated")
+                            
+                            logger.info(f"[BatchController] Synced {synced_count}/{len(self._structured_errors)} error statuses to model")
+            except Exception as e:
+                logger.warning(f"[BatchController] Failed to sync error status to model: {e}")
+        
         # Use batch_status_view for formatting
         summary_msg = batch_status_view.format_batch_summary(merged_results)
         status_message = batch_status_view.get_status_message(merged_results)
@@ -941,6 +990,9 @@ class BatchController(QObject):
         
         if made_changes and not canceled:
             self.main._set_current_tab_modified(True)
+        
+        # Record run to history (Stage 8)
+        self._record_run_to_history(results, canceled)
         
         # Update status bar
         self.main.statusBar().showMessage(status_message, 5000)
@@ -1060,3 +1112,109 @@ class BatchController(QObject):
         except Exception as e:
             logger.error(f"Failed to save report: {e}")
             return False
+    
+    # =========================================================================
+    # RUN HISTORY RECORDING (Stage 8)
+    # =========================================================================
+    
+    def _record_run_to_history(self, results: dict, was_canceled: bool):
+        """
+        Record the completed batch run to history store.
+        
+        Args:
+            results: Results dict from worker
+            was_canceled: Whether the run was canceled
+        """
+        try:
+            from core.run_history_store import RunHistoryStore, RunRecord
+            from datetime import datetime
+            
+            # Get file info
+            file_name = None
+            file_path = None
+            current_file = self.main._get_current_file_data()
+            if current_file and hasattr(current_file, 'file_path'):
+                file_path = current_file.file_path
+                if file_path:
+                    file_name = file_path.split('/')[-1].split('\\')[-1]
+            
+            # Get context (sanitized)
+            ctx = self._last_run_context or {}
+            
+            # Count error categories from _structured_errors using Counter
+            from collections import Counter
+            error_category_counts = {}
+            if self._structured_errors:
+                # Extract category from each error (use 'category' key or derive from 'code')
+                categories = []
+                for err in self._structured_errors:
+                    cat = err.get('category') or err.get('code', 'UNKNOWN')
+                    if cat:
+                        categories.append(cat)
+                error_category_counts = dict(Counter(categories))
+            
+            # Count QC codes from model
+            qc_code_counts = {}
+            qc_count_updated = 0
+            qc_count_total = 0
+            
+            try:
+                if hasattr(self.main, 'translate_page') and self.main.translate_page:
+                    table_widget = getattr(self.main.translate_page, 'table_widget', None)
+                    if table_widget and hasattr(table_widget, 'table_view'):
+                        model = table_widget.table_view.model()
+                        if hasattr(model, 'sourceModel'):
+                            model = model.sourceModel()
+                        
+                        if hasattr(model, '_rows'):
+                            for row in model._rows:
+                                if getattr(row, 'qc_flag', False):
+                                    qc_count_total += 1
+                                    # Count from updated rows only (have translation)
+                                    if getattr(row, 'translation', None):
+                                        qc_count_updated += 1
+                                    
+                                    # Count individual codes
+                                    codes = getattr(row, 'qc_codes', []) or []
+                                    for code in codes:
+                                        qc_code_counts[code] = qc_code_counts.get(code, 0) + 1
+            except Exception as e:
+                logger.debug(f"Could not count QC codes: {e}")
+            
+            # Calculate duration from start time using perf_counter
+            import time
+            duration_ms = 0
+            if self._batch_start_time:
+                duration_ms = int((time.perf_counter() - self._batch_start_time) * 1000)
+            
+            # Create record
+            record = RunRecord(
+                timestamp=datetime.now().isoformat(sep=' ', timespec='seconds'),
+                file_name=file_name,
+                file_path=file_path,
+                provider=ctx.get('engine') or ctx.get('provider'),
+                model=ctx.get('model'),
+                source_lang=ctx.get('source_lang'),
+                target_lang=ctx.get('target_lang'),
+                chunk_size=ctx.get('chunk_size'),
+                processed=self._total_processed,
+                success_updated=self._success_count,
+                errors_count=len(self._structured_errors),
+                qc_count_updated=qc_count_updated,
+                qc_count_total=qc_count_total,
+                duration_ms=duration_ms,
+                error_category_counts=error_category_counts,
+                qc_code_counts=qc_code_counts
+            )
+            
+            # Save to store
+            store = RunHistoryStore.instance()
+            
+            # Set project path if available
+            if hasattr(self.main, 'current_project_path') and self.main.current_project_path:
+                store.set_project_path(self.main.current_project_path)
+            
+            store.add_run(record)
+            
+        except Exception as e:
+            logger.warning(f"Failed to record run to history: {e}")
