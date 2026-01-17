@@ -1,0 +1,5 @@
+# RenForge Dependencies
+PyQt6>=6.4.0
+PyQt6-Fluent-Widgets>=1.5.0
+google-generativeai>=0.3.0
+googletrans==4.0.0-rc1
