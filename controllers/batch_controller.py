@@ -1185,12 +1185,44 @@ class BatchController(QObject):
             
             # Collect error row IDs from structured_errors (Stage 8.2)
             error_row_ids = []
+            error_items = []  # Stage 9: detailed items for drill-down
             for err in self._structured_errors:
                 row_id = err.get('row_id')
                 if row_id is not None:
                     error_row_ids.append(row_id)
+                    # Build lightweight error item (no secrets, no full text)
+                    error_items.append({
+                        'row_id': row_id,
+                        'file_line': err.get('file_line', row_id + 1),
+                        'code': err.get('code', 'UNKNOWN'),
+                        'message': err.get('message', '')[:100],  # Truncate
+                        'category': err.get('category') or err.get('code', 'UNKNOWN')
+                    })
             error_row_ids = sorted(set(error_row_ids))  # Dedupe and sort
             qc_row_ids = sorted(set(qc_row_ids))  # Dedupe and sort
+            
+            # Build QC items for drill-down (Stage 9)
+            qc_items = []
+            try:
+                if hasattr(self.main, 'translate_page') and self.main.translate_page:
+                    table_widget = getattr(self.main.translate_page, 'table_widget', None)
+                    if table_widget and hasattr(table_widget, 'table_view'):
+                        model = table_widget.table_view.model()
+                        if hasattr(model, 'sourceModel'):
+                            model = model.sourceModel()
+                        
+                        if hasattr(model, '_rows'):
+                            for idx in qc_row_ids:
+                                if 0 <= idx < len(model._rows):
+                                    row = model._rows[idx]
+                                    qc_items.append({
+                                        'row_id': idx,
+                                        'file_line': getattr(row, 'file_line', idx + 1),
+                                        'qc_codes': list(getattr(row, 'qc_codes', []) or []),
+                                        'qc_summary': getattr(row, 'qc_summary', '')[:100]
+                                    })
+            except Exception as e:
+                logger.debug(f"Could not build QC items: {e}")
             
             # Calculate duration from start time using perf_counter
             import time
@@ -1217,7 +1249,9 @@ class BatchController(QObject):
                 error_category_counts=error_category_counts,
                 qc_code_counts=qc_code_counts,
                 error_row_ids=error_row_ids,  # Stage 8.2
-                qc_row_ids=qc_row_ids  # Stage 8.2
+                qc_row_ids=qc_row_ids,  # Stage 8.2
+                error_items=error_items,  # Stage 9
+                qc_items=qc_items  # Stage 9
             )
             
             # Save to store

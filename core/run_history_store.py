@@ -53,6 +53,12 @@ class RunRecord:
     error_row_ids: List[int] = field(default_factory=list)  # Source row indices with errors
     qc_row_ids: List[int] = field(default_factory=list)     # Source row indices with QC issues
     
+    # Detailed items for drill-down (Stage 9)
+    # error_items: list of {row_id, file_line, code, message, category}
+    error_items: List[dict] = field(default_factory=list)
+    # qc_items: list of {row_id, file_line, qc_codes, qc_summary}
+    qc_items: List[dict] = field(default_factory=list)
+    
     # Report paths (optional)
     last_report_md_path: Optional[str] = None
     last_report_json_path: Optional[str] = None
@@ -308,7 +314,9 @@ class RunHistoryStore:
                     error_category_counts=item.get('error_category_counts', {}),
                     qc_code_counts=item.get('qc_code_counts', {}),
                     error_row_ids=item.get('error_row_ids', []),  # Backward compat
-                    qc_row_ids=item.get('qc_row_ids', [])  # Backward compat
+                    qc_row_ids=item.get('qc_row_ids', []),  # Backward compat
+                    error_items=item.get('error_items', []),  # Stage 9
+                    qc_items=item.get('qc_items', [])  # Stage 9
                 )
                 self._runs.append(record)
             

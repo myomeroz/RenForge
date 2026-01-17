@@ -8,7 +8,7 @@ Dashboard showing project health, run history, and quick actions.
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QScrollArea, QFrame
+    QScrollArea, QFrame, QFileDialog
 )
 
 from qfluentwidgets import (
@@ -241,6 +241,204 @@ class TrendListCard(CardWidget):
                 widget.setStyleSheet("")
 
 
+class RunDetailsCard(CardWidget):
+    """
+    Card showing detailed information about a selected run (Stage 9).
+    
+    Displays context, error items list, QC items list, and report actions.
+    """
+    
+    # Signal when user clicks an item to navigate
+    item_clicked = Signal(int, str)  # (row_id, mode: 'error' or 'qc')
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(12)
+        
+        # Header with run info
+        header_layout = QHBoxLayout()
+        self.header_label = StrongBodyLabel("Çalışma Detayları")
+        header_layout.addWidget(self.header_label)
+        header_layout.addStretch()
+        
+        self.timestamp_label = BodyLabel("")
+        self.timestamp_label.setStyleSheet("color: #888;")
+        header_layout.addWidget(self.timestamp_label)
+        layout.addLayout(header_layout)
+        
+        # Context grid
+        self.context_grid = QGridLayout()
+        self.context_grid.setSpacing(8)
+        self._context_labels = {}
+        
+        context_items = [
+            ("Sağlayıcı:", "provider"), ("Model:", "model"),
+            ("Kaynak:", "source_lang"), ("Hedef:", "target_lang"),
+            ("İşlenen:", "processed"), ("Başarılı:", "success"),
+            ("Hata:", "errors"), ("Süre:", "duration")
+        ]
+        for i, (label_text, key) in enumerate(context_items):
+            row, col = divmod(i, 4)
+            label = BodyLabel(label_text)
+            label.setStyleSheet("color: #888;")
+            self.context_grid.addWidget(label, row * 2, col * 2)
+            
+            value_label = BodyLabel("-")
+            self._context_labels[key] = value_label
+            self.context_grid.addWidget(value_label, row * 2, col * 2 + 1)
+        
+        layout.addLayout(self.context_grid)
+        
+        # Errors section
+        self.errors_header = StrongBodyLabel("Hatalar")
+        layout.addWidget(self.errors_header)
+        
+        self.errors_list = QVBoxLayout()
+        self.errors_list.setSpacing(4)
+        layout.addLayout(self.errors_list)
+        
+        # QC section
+        self.qc_header = StrongBodyLabel("QC Sorunları")
+        layout.addWidget(self.qc_header)
+        
+        self.qc_list = QVBoxLayout()
+        self.qc_list.setSpacing(4)
+        layout.addLayout(self.qc_list)
+        
+        # Empty/old run message
+        self.empty_label = BodyLabel("")
+        self.empty_label.setStyleSheet("color: #888; font-style: italic;")
+        layout.addWidget(self.empty_label)
+        
+        # Report actions
+        actions_layout = QHBoxLayout()
+        actions_layout.setSpacing(8)
+        
+        self.copy_btn = PushButton("Kopyala")
+        self.copy_btn.setIcon(FIF.COPY)
+        self.copy_btn.setToolTip("Raporu kopyala (Markdown)")
+        self.copy_btn.setEnabled(False)
+        actions_layout.addWidget(self.copy_btn)
+        
+        self.save_md_btn = PushButton("Kaydet (MD)")
+        self.save_md_btn.setIcon(FIF.SAVE)
+        self.save_md_btn.setToolTip("Raporu kaydet (Markdown)")
+        self.save_md_btn.setEnabled(False)
+        actions_layout.addWidget(self.save_md_btn)
+        
+        self.save_json_btn = PushButton("JSON")
+        self.save_json_btn.setIcon(FIF.CODE)
+        self.save_json_btn.setToolTip("Raporu kaydet (JSON)")
+        self.save_json_btn.setEnabled(False)
+        actions_layout.addWidget(self.save_json_btn)
+        
+        actions_layout.addStretch()
+        layout.addLayout(actions_layout)
+        
+        layout.addStretch()
+    
+    def set_run(self, run, format_duration_fn=None):
+        """
+        Update card with run details.
+        
+        Args:
+            run: RunRecord object or None
+            format_duration_fn: Optional function to format duration_ms
+        """
+        self._clear_lists()
+        
+        if not run:
+            self.header_label.setText("Çalışma Detayları")
+            self.timestamp_label.setText("")
+            self.empty_label.setText("Çalışma seçilmedi")
+            for label in self._context_labels.values():
+                label.setText("-")
+            self.copy_btn.setEnabled(False)
+            self.save_md_btn.setEnabled(False)
+            self.save_json_btn.setEnabled(False)
+            return
+        
+        # Update header
+        self.header_label.setText(f"Çalışma: {run.file_name or 'Dosya'}")
+        self.timestamp_label.setText(run.timestamp)
+        
+        # Update context
+        self._context_labels['provider'].setText(run.provider or "-")
+        self._context_labels['model'].setText(run.model or "-")
+        self._context_labels['source_lang'].setText(run.source_lang or "-")
+        self._context_labels['target_lang'].setText(run.target_lang or "-")
+        self._context_labels['processed'].setText(str(run.processed))
+        self._context_labels['success'].setText(str(run.success_updated))
+        self._context_labels['errors'].setText(str(run.errors_count))
+        
+        if format_duration_fn:
+            self._context_labels['duration'].setText(format_duration_fn(run.duration_ms))
+        else:
+            self._context_labels['duration'].setText(f"{run.duration_ms}ms")
+        
+        # Populate error items
+        if run.error_items:
+            self.empty_label.setText("")
+            for err in run.error_items[:10]:  # Limit to 10
+                self._add_item(
+                    self.errors_list,
+                    err.get('row_id', 0),
+                    err.get('file_line', 0),
+                    err.get('code', 'UNKNOWN'),
+                    err.get('message', ''),
+                    'error'
+                )
+        elif run.errors_count > 0:
+            # Old run without detailed items
+            lbl = BodyLabel("Bu çalışma eski sürümden, satır detayı yok.")
+            lbl.setStyleSheet("color: #888; font-style: italic;")
+            self.errors_list.addWidget(lbl)
+        
+        # Populate QC items
+        if run.qc_items:
+            for qc in run.qc_items[:10]:  # Limit to 10
+                codes_str = ', '.join(qc.get('qc_codes', []))
+                self._add_item(
+                    self.qc_list,
+                    qc.get('row_id', 0),
+                    qc.get('file_line', 0),
+                    codes_str,
+                    qc.get('qc_summary', ''),
+                    'qc'
+                )
+        elif run.qc_count_updated > 0:
+            # Old run without detailed items
+            lbl = BodyLabel("Bu çalışma eski sürümden, QC detayı yok.")
+            lbl.setStyleSheet("color: #888; font-style: italic;")
+            self.qc_list.addWidget(lbl)
+        
+        # Enable copy for runs with data
+        self.copy_btn.setEnabled(True)
+        self.save_md_btn.setEnabled(True)
+        self.save_json_btn.setEnabled(True)
+    
+    def _add_item(self, layout, row_id: int, file_line: int, code: str, message: str, mode: str):
+        """Add a clickable item row."""
+        display = f"Tablo: {row_id + 1} • Dosya: {file_line} • {code}"
+        if message:
+            display += f" — {message[:40]}"
+        
+        btn = PushButton(display)
+        btn.setFlat(True)
+        btn.setStyleSheet("text-align: left; padding: 4px 8px;")
+        btn.clicked.connect(lambda: self.item_clicked.emit(row_id, mode))
+        layout.addWidget(btn)
+    
+    def _clear_lists(self):
+        """Clear error and QC lists."""
+        for layout in [self.errors_list, self.qc_list]:
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
 class HealthPage(QWidget):
     """
     Health dashboard page showing project stats and run history.
@@ -362,6 +560,14 @@ class HealthPage(QWidget):
         left_col.addStretch()
         grid_layout.addLayout(left_col, 1)
         
+        # Middle column: Run Details (Stage 9)
+        self.run_details = RunDetailsCard()
+        self.run_details.item_clicked.connect(self._on_detail_item_clicked)
+        self.run_details.copy_btn.clicked.connect(self._on_copy_report)
+        self.run_details.save_md_btn.clicked.connect(self._on_save_report_md)
+        self.run_details.save_json_btn.clicked.connect(self._on_save_report_json)
+        grid_layout.addWidget(self.run_details, 2)  # Double width
+        
         # Right column: Trend
         self.trend_card = TrendListCard("Son Çalıştırmalar")
         grid_layout.addWidget(self.trend_card, 1)
@@ -481,6 +687,9 @@ class HealthPage(QWidget):
             self.kpi_duration.set_value("-")
             
             self.copy_report_btn.setEnabled(False)
+            
+            # Note: RunDetails card handles its own button states via set_run
+            
             self.goto_first_error_btn.setEnabled(False)
             self.goto_last_error_btn.setEnabled(False)
             self.goto_first_qc_btn.setEnabled(False)
@@ -493,6 +702,9 @@ class HealthPage(QWidget):
         # Update trend
         self.trend_card.set_runs(runs)
         
+        # Update run details (Stage 9)
+        self.run_details.set_run(self._selected_run, self._format_duration_ms)
+
         logger.debug(f"Health page refreshed: {len(runs)} runs")
     
     def showEvent(self, event):
@@ -501,21 +713,106 @@ class HealthPage(QWidget):
         self.refresh()
     
     def _on_copy_report(self):
-        """Copy last run report to clipboard."""
-        main_window = self.window()
-        if hasattr(main_window, 'batch_controller') and main_window.batch_controller:
-            if main_window.batch_controller.copy_report_markdown():
+        """Copy selected run report to clipboard (Stage 10)."""
+        if not self._selected_run:
+            return
+            
+        try:
+            from core.batch_report import build_markdown_from_run
+            from PySide6.QtGui import QClipboard, QGuiApplication
+            
+            report = build_markdown_from_run(self._selected_run)
+            QGuiApplication.clipboard().setText(report)
+            
+            InfoBar.success(
+                title="Kopyalandı",
+                content="Rapor panoya kopyalandı",
+                parent=self,
+                duration=2000
+            )
+        except Exception as e:
+            logger.error(f"Copy report failed: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"Rapor kopyalanamadı: {e}",
+                parent=self
+            )
+
+    def _on_save_report_md(self):
+        """Save selected run report as Markdown (Stage 10)."""
+        if not self._selected_run:
+            return
+            
+        try:
+            from core.batch_report import build_markdown_from_run
+            
+            # Default filename
+            ts = self._selected_run.timestamp.replace(':', '-').replace(' ', '_')
+            default_name = f"renforge_report_{ts}.md"
+            
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Raporu Kaydet (Markdown)",
+                default_name,
+                "Markdown Files (*.md);;All Files (*.*)"
+            )
+            
+            if path:
+                report = build_markdown_from_run(self._selected_run)
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(report)
+                
                 InfoBar.success(
-                    title="Kopyalandı",
-                    content="Rapor panoya kopyalandı",
-                    parent=self
+                    title="Kaydedildi",
+                    content=f"Rapor kaydedildi:\n{path}",
+                    parent=self,
+                    duration=3000
                 )
-            else:
-                InfoBar.warning(
-                    title="Uyarı",
-                    content="Kopyalanacak rapor bulunamadı",
-                    parent=self
+        except Exception as e:
+            logger.error(f"Save MD failed: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"Kaydetme başarısız: {e}",
+                parent=self
+            )
+
+    def _on_save_report_json(self):
+        """Save selected run report as JSON (Stage 10)."""
+        if not self._selected_run:
+            return
+            
+        try:
+            from core.batch_report import format_json_from_run
+            
+            # Default filename
+            ts = self._selected_run.timestamp.replace(':', '-').replace(' ', '_')
+            default_name = f"renforge_report_{ts}.json"
+            
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Raporu Kaydet (JSON)",
+                default_name,
+                "JSON Files (*.json);;All Files (*.*)"
+            )
+            
+            if path:
+                report = format_json_from_run(self._selected_run)
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(report)
+                
+                InfoBar.success(
+                    title="Kaydedildi",
+                    content=f"Rapor kaydedildi:\n{path}",
+                    parent=self,
+                    duration=3000
                 )
+        except Exception as e:
+            logger.error(f"Save JSON failed: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"Kaydetme başarısız: {e}",
+                parent=self
+            )
     
     def _on_goto_first_error(self):
         """Navigate to first error row using row ID."""
@@ -567,3 +864,7 @@ class HealthPage(QWidget):
             self.filter_by_error_category.emit(category_name)
         elif category_type == "qc":
             self.filter_by_qc_code.emit(category_name)
+    
+    def _on_detail_item_clicked(self, row_id: int, mode: str):
+        """Handle click on error/QC item in Run Details."""
+        self.navigate_to_row_requested.emit(row_id, mode, True)
