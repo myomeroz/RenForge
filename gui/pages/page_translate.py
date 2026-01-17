@@ -69,6 +69,12 @@ class TranslatePage(QWidget):
         self.mini_batch_bar.cancel_clicked.connect(self._on_mini_bar_cancel)
         self.mini_batch_bar.show_failed_clicked.connect(self._on_mini_bar_show_failed)
         self.mini_batch_bar.retry_clicked.connect(self._on_mini_bar_retry)
+        
+        # Report signals (Stage 7)
+        self.mini_batch_bar.report_copy_markdown.connect(self._on_report_copy_markdown)
+        self.mini_batch_bar.report_save_markdown.connect(self._on_report_save_markdown)
+        self.mini_batch_bar.report_save_json.connect(self._on_report_save_json)
+        
         layout.addWidget(self.mini_batch_bar)
         
         # Translation table
@@ -215,6 +221,11 @@ class TranslatePage(QWidget):
         self.errors_only_chk.stateChanged.connect(self._on_errors_only_toggled)
         layout.addWidget(self.errors_only_chk)
         
+        # QC Only Toggle (Stage 6)
+        self.problems_only_chk = CheckBox("Sadece Sorunlular")
+        self.problems_only_chk.stateChanged.connect(self._on_problems_only_toggled)
+        layout.addWidget(self.problems_only_chk)
+        
         layout.addStretch()
         
         # Emit initial signals to sync state
@@ -252,6 +263,30 @@ class TranslatePage(QWidget):
         if hasattr(self, 'table_widget') and hasattr(self.table_widget, 'filter_segment'):
             # This updates the segmented widget (Top Bar) -> triggers its signal -> updates proxy
             self.table_widget.filter_segment.setCurrentItem(target_filter)
+
+    def _on_problems_only_toggled(self, state):
+        """Handle QC problems only toggle."""
+        # CheckBox state: 0=Unchecked, 2=Checked
+        is_checked = (state == 2)
+        
+        # Access proxy via the table widget
+        # TableWidget -> generic_table -> model() which should be the proxy
+        if hasattr(self, 'table_widget'):
+            # Try to get proxy from table widget API if exists, or drill down
+            proxy = None
+            if hasattr(self.table_widget, 'get_proxy_model'):
+                proxy = self.table_widget.get_proxy_model()
+            elif hasattr(self.table_widget, 'view'):
+                 proxy = self.table_widget.view.model()
+            elif hasattr(self.table_widget, 'table_view'): # Fallback naming
+                 proxy = self.table_widget.table_view.model()
+            
+            if proxy and hasattr(proxy, 'set_qc_filter'):
+                proxy.set_qc_filter(is_checked)
+            else:
+                from renforge_logger import get_logger
+                logger = get_logger("gui.pages.translate")
+                logger.warning("Could not set QC filter - proxy not found or incompatible")
 
     def _update_engine_ui(self):
         """Update dropdown text and icon based on selected engine."""
@@ -513,6 +548,132 @@ class TranslatePage(QWidget):
             main_window.batch_controller.retry_failed_last_run()
             
         logger.info("Switched to 'error' filter via MiniBatchBar")
+    
+    # =========================================================================
+    # REPORT HANDLERS (Stage 7)
+    # =========================================================================
+    
+    def _on_report_copy_markdown(self):
+        """Copy batch report as Markdown to clipboard."""
+        main_window = self.window()
+        if hasattr(main_window, 'batch_controller') and main_window.batch_controller:
+            bc = main_window.batch_controller
+            if bc.has_last_run():
+                if bc.copy_report_markdown():
+                    from qfluentwidgets import InfoBar, InfoBarPosition
+                    InfoBar.success(
+                        title="Panoya Kopyalandı",
+                        content="Rapor Markdown formatında panoya kopyalandı.",
+                        orient=Qt.Horizontal,
+                        isClosable=True,
+                        position=InfoBarPosition.TOP,
+                        duration=3000,
+                        parent=self
+                    )
+                else:
+                    from qfluentwidgets import InfoBar, InfoBarPosition
+                    InfoBar.error(
+                        title="Hata",
+                        content="Rapor oluşturulamadı.",
+                        parent=self
+                    )
+            else:
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.info(
+                    title="Bilgi",
+                    content="Henüz rapor oluşturulacak bir işlem yok.",
+                    parent=self
+                )
+    
+    def _on_report_save_markdown(self):
+        """Save batch report as Markdown file."""
+        from PySide6.QtWidgets import QFileDialog
+        
+        main_window = self.window()
+        if not hasattr(main_window, 'batch_controller') or not main_window.batch_controller:
+            return
+            
+        bc = main_window.batch_controller
+        if not bc.has_last_run():
+            from qfluentwidgets import InfoBar
+            InfoBar.info(
+                title="Bilgi",
+                content="Henüz rapor oluşturulacak bir işlem yok.",
+                parent=self
+            )
+            return
+        
+        # Generate filename suggestion
+        from datetime import datetime
+        default_name = f"batch_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Raporu Kaydet (Markdown)",
+            default_name,
+            "Markdown Files (*.md);;All Files (*)"
+        )
+        
+        if path:
+            if bc.save_report_markdown(path):
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.success(
+                    title="Kaydedildi",
+                    content=f"Rapor kaydedildi: {path}",
+                    parent=self
+                )
+            else:
+                from qfluentwidgets import InfoBar
+                InfoBar.error(
+                    title="Hata",
+                    content="Rapor kaydedilemedi.",
+                    parent=self
+                )
+    
+    def _on_report_save_json(self):
+        """Save batch report as JSON file."""
+        from PySide6.QtWidgets import QFileDialog
+        
+        main_window = self.window()
+        if not hasattr(main_window, 'batch_controller') or not main_window.batch_controller:
+            return
+            
+        bc = main_window.batch_controller
+        if not bc.has_last_run():
+            from qfluentwidgets import InfoBar
+            InfoBar.info(
+                title="Bilgi",
+                content="Henüz rapor oluşturulacak bir işlem yok.",
+                parent=self
+            )
+            return
+        
+        # Generate filename suggestion
+        from datetime import datetime
+        default_name = f"batch_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Raporu Kaydet (JSON)",
+            default_name,
+            "JSON Files (*.json);;All Files (*)"
+        )
+        
+        if path:
+            if bc.save_report_json(path):
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.success(
+                    title="Kaydedildi",
+                    content=f"Rapor kaydedildi: {path}",
+                    parent=self
+                )
+            else:
+                from qfluentwidgets import InfoBar
+                InfoBar.error(
+                    title="Hata",
+                    content="Rapor kaydedilemedi.",
+                    parent=self
+                )
     
     def select_line(self, line_num):
         """Select a line in the table."""

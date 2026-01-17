@@ -162,7 +162,11 @@ class TranslationTableWidget(QWidget):
                     'translation': row_obj.editable_text,
                     'status': row_obj.status.value,
                     'is_modified': row_obj.status.value == 'modified',
-                    'batch_marker': row_obj.status.value  # approximation
+                    'batch_marker': row_obj.status.value,  # approximation
+                    # Stage 6: QC Data
+                    'qc_flag': row_obj.qc_flag,
+                    'qc_codes': row_obj.qc_codes,
+                    'qc_summary': row_obj.qc_summary
                  }
         
         self.selection_changed.emit(row_data_payload)

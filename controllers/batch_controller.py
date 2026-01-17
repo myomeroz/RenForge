@@ -597,6 +597,30 @@ class BatchController(QObject):
                     item_data.current_text = text
                     item_data.is_modified_session = True
                 
+                # QC Check (Stage 6)
+                qc_patch = {}
+                try:
+                    import core.qc_engine as qc_engine
+                    qc_issues = qc_engine.check_quality(item_data.original_text, text)
+                    
+                    has_issues = len(qc_issues) > 0
+                    codes = [i.code for i in qc_issues]
+                    summary = "\n".join([f"• {i.message}" for i in qc_issues])
+                    
+                    item_data.qc_flag = has_issues
+                    item_data.qc_codes = codes
+                    item_data.qc_summary = summary
+                    
+                    qc_patch = {
+                        'qc_flag': has_issues,
+                        'qc_codes': codes,
+                        'qc_summary': summary
+                    }
+                except ImportError:
+                    pass
+                except Exception as e:
+                    logger.warning(f"QC check failed for idx {idx}: {e}")
+                
                 # Track success
                 self._total_processed += 1
                 self._success_count += 1
@@ -614,9 +638,20 @@ class BatchController(QObject):
                 )
                 get_change_log().add_record(record)
                 
-                # Update table cell directly (no style update)
+                # Update table cell directly
                 try:
-                    table_manager.update_table_item_text(self.main, table_widget, idx, 4, text)
+                    # Try advanced model update first (includes QC status)
+                    model = table_widget.model()
+                    if hasattr(model, 'sourceModel'):
+                        model = model.sourceModel()
+                        
+                    if hasattr(model, 'update_single_row'):
+                        patch = {'translation': text}
+                        patch.update(qc_patch)
+                        model.update_single_row(idx, patch)
+                    else:
+                        # Fallback to simple text update
+                        table_manager.update_table_item_text(self.main, table_widget, idx, 4, text)
                 except Exception as e:
                     logger.debug(f"Batch table update error for idx {idx}: {e}")
                 
@@ -666,6 +701,30 @@ class BatchController(QObject):
         self._success_count += 1
         self._emit_status()
         
+        # QC Check (Stage 6)
+        qc_patch = {}
+        try:
+            import core.qc_engine as qc_engine
+            qc_issues = qc_engine.check_quality(original_item_data.original_text, translated_text)
+            
+            has_issues = len(qc_issues) > 0
+            codes = [i.code for i in qc_issues]
+            summary = "\n".join([f"• {i.message}" for i in qc_issues])
+            
+            original_item_data.qc_flag = has_issues
+            original_item_data.qc_codes = codes
+            original_item_data.qc_summary = summary
+            
+            qc_patch = {
+                'qc_flag': has_issues,
+                'qc_codes': codes,
+                'qc_summary': summary
+            }
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"QC check failed for item {item_index}: {e}")
+            
         record = ChangeRecord(
             timestamp=time.time(),
             file_path=current_file_data.file_path,
@@ -679,7 +738,20 @@ class BatchController(QObject):
         get_change_log().add_record(record)
         
         try:
-            table_manager.update_table_item_text(self.main, table_widget, item_index, 4, translated_text)
+            # Try advanced model update first
+            model = table_widget.model()
+            if hasattr(model, 'sourceModel'):
+                model = model.sourceModel()
+                
+            if hasattr(model, 'update_single_row'):
+                patch = {'translation': translated_text}
+                patch.update(qc_patch)
+                model.update_single_row(item_index, patch)
+            else:
+                table_manager.update_table_item_text(self.main, table_widget, item_index, 4, translated_text)
+                # For legacy table, we might need to manually trigger status update if possible, 
+                # but update_table_row_style below handles it based on item state
+            
             table_manager.update_table_row_style(table_widget, item_index, original_item_data)
         except Exception as e:
             logger.error(f"Batch update table UI failed: {e}")
@@ -874,3 +946,117 @@ class BatchController(QObject):
         self.main.statusBar().showMessage(status_message, 5000)
         self.main._update_ui_state()
 
+    # =========================================================================
+    # REPORT GENERATION (Stage 7)
+    # =========================================================================
+    
+    def has_last_run(self) -> bool:
+        """Check if there's a last run to report on."""
+        return self._total_processed > 0 or len(self._structured_errors) > 0
+    
+    def generate_report(self):
+        """
+        Generate a BatchReport from the last run.
+        
+        Returns:
+            BatchReport instance or None if no run data
+        """
+        if not self.has_last_run():
+            return None
+        
+        from core.batch_report import BatchReportBuilder
+        
+        # Get table model for QC data
+        table_model = None
+        try:
+            if hasattr(self.main, 'translate_page') and self.main.translate_page:
+                table_widget = getattr(self.main.translate_page, 'table_widget', None)
+                if table_widget and hasattr(table_widget, 'table_view'):
+                    model = table_widget.table_view.model()
+                    if hasattr(model, 'sourceModel'):
+                        table_model = model.sourceModel()
+                    else:
+                        table_model = model
+        except Exception as e:
+            logger.debug(f"Could not get table model for report: {e}")
+        
+        return BatchReportBuilder.build(self, table_model)
+    
+    def copy_report_markdown(self) -> bool:
+        """
+        Copy report as Markdown to clipboard.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        report = self.generate_report()
+        if not report:
+            logger.warning("No batch run data to generate report")
+            return False
+        
+        from core.batch_report import format_markdown
+        from PySide6.QtWidgets import QApplication
+        
+        markdown = format_markdown(report)
+        
+        clipboard = QApplication.clipboard()
+        clipboard.setText(markdown)
+        
+        logger.info("Report copied to clipboard as Markdown")
+        return True
+    
+    def save_report_markdown(self, path: str) -> bool:
+        """
+        Save report as Markdown file.
+        
+        Args:
+            path: File path to save to
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        report = self.generate_report()
+        if not report:
+            logger.warning("No batch run data to generate report")
+            return False
+        
+        from core.batch_report import format_markdown
+        
+        markdown = format_markdown(report)
+        
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(markdown)
+            logger.info(f"Report saved to {path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save report: {e}")
+            return False
+    
+    def save_report_json(self, path: str) -> bool:
+        """
+        Save report as JSON file.
+        
+        Args:
+            path: File path to save to
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        report = self.generate_report()
+        if not report:
+            logger.warning("No batch run data to generate report")
+            return False
+        
+        from core.batch_report import format_json
+        
+        json_str = format_json(report)
+        
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(json_str)
+            logger.info(f"Report saved to {path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save report: {e}")
+            return False

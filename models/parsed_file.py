@@ -59,7 +59,14 @@ class ParsedItem:
     
     # Batch translation markers
     batch_marker: Optional[str] = None     # "AI_FAIL" | "AI_WARN" | "OK" | None
+    batch_marker: Optional[str] = None     # "AI_FAIL" | "AI_WARN" | "OK" | None
     batch_tooltip: Optional[str] = None    # Reason text for marker
+
+    # QC / Problem Detection (Stage 6)
+    qc_flag: bool = False                  # True if any QC issue exists
+    qc_codes: List[str] = field(default_factory=list) # List of issue codes
+    qc_summary: Optional[str] = None       # Human readable summary
+
 
     def get_text(self) -> str:
         """Get the current text content."""

@@ -45,7 +45,10 @@ class TranslationFilterProxyModel(QSortFilterProxyModel):
         # Filtreleme ayarları
         self._search_text: str = ""
         self._search_column: int = -1  # -1 = tüm sütunlar
+        self._search_text: str = ""
+        self._search_column: int = -1  # -1 = tüm sütunlar
         self._status_filter: str = self.FILTER_ALL
+        self._qc_filter_enabled: bool = False # Stage 6: Independent QC filter
         
         # Case-insensitive arama
         self.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -72,22 +75,50 @@ class TranslationFilterProxyModel(QSortFilterProxyModel):
         self._status_filter = self.FILTER_ALL
         self.invalidateFilter()
     
+    def set_qc_filter(self, enabled: bool) -> None:
+        """QC (Known Problems) filtresini aç/kapat."""
+        self._qc_filter_enabled = enabled
+        self.invalidateFilter()
+
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
         """Satırın filtreyi geçip geçmediğini kontrol et."""
         model = self.sourceModel()
         if not model:
             return True
-        
-        # Status filtresi
-        if self._status_filter != self.FILTER_ALL:
-            if not self._check_status_filter(model, source_row):
-                return False
-        
-        # Metin araması
+
+        # 1. Search Filter (AND)
         if self._search_text:
             if not self._check_search_filter(model, source_row):
                 return False
+
+        # 2. Status/QC Logic (OR between Error and QC)
+        is_error_filter = (self._status_filter == self.FILTER_ERROR)
+        is_qc_filter = self._qc_filter_enabled
         
+        if is_error_filter or is_qc_filter:
+            # OR Logic: Show if (ErrorFilter & IsError) OR (QCFilter & IsQC)
+            row_data = None
+            if hasattr(model, 'get_row_data'):
+                row_data = model.get_row_data(source_row)
+            
+            if not row_data:
+                return False # Should not happen if model is valid
+                
+            matches_error = False
+            if is_error_filter:
+                matches_error = (row_data.status == RowStatus.ERROR)
+            
+            matches_qc = False
+            if is_qc_filter:
+                matches_qc = row_data.qc_flag
+                
+            return matches_error or matches_qc
+            
+        # 3. Standard Status Filter (if not Error filter)
+        if self._status_filter != self.FILTER_ALL:
+             if not self._check_status_filter(model, source_row):
+                 return False
+
         return True
     
     def _check_status_filter(self, model, row_idx: int) -> bool:

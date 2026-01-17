@@ -165,7 +165,11 @@ class TranslationTableModel(QAbstractTableModel):
         # ToolTipRole
         elif role == Qt.ItemDataRole.ToolTipRole:
             if col_idx == TableColumn.STATUS:
-                return f"Status: {row.status.value}\nFlagged: {row.is_flagged}\nError: {row.error_message or 'None'}"
+
+                base_tooltip = f"Status: {row.status.value}\nFlagged: {row.is_flagged}\nError: {row.error_message or 'None'}"
+                if row.qc_flag and row.qc_summary:
+                    base_tooltip += f"\n\nQC Issues:\n{row.qc_summary}"
+                return base_tooltip
             if col_idx == TableColumn.EDITABLE and row.notes:
                 return f"Note: {row.notes}"
             return None
@@ -198,7 +202,9 @@ class TranslationTableModel(QAbstractTableModel):
         elif col == TableColumn.BREAKPOINT:
             return "🚩" if row.is_flagged else ""
         elif col == TableColumn.STATUS:
-            return self._get_status_icon(row)
+             # If QC issue exists, prioritize displaying that or update tooltip
+             # Actually _get_status_icon handles precedence
+             return self._get_status_icon(row)
         return ""
     
     def _get_status_icon(self, row: RowData) -> str:
@@ -206,6 +212,8 @@ class TranslationTableModel(QAbstractTableModel):
             return "✔"
         elif row.status == RowStatus.ERROR:
             return "⚠"
+        elif row.qc_flag: # Stage 6: QC warning
+            return "⚠️" # Or another icon for QC
         elif row.status == RowStatus.TRANSLATED:
             return "✓"
         elif row.status == RowStatus.MODIFIED:
@@ -246,6 +254,17 @@ class TranslationTableModel(QAbstractTableModel):
         
         # Use RowData's update_text (handles APPROVED→MODIFIED)
         row.update_text(new_text)
+        
+        # QC Check (Stage 6) - Live check on manual edit
+        try:
+            import core.qc_engine as qc_engine
+            qc_issues = qc_engine.check_quality(row.original_text, new_text)
+            
+            row.qc_flag = len(qc_issues) > 0
+            row.qc_codes = [i.code for i in qc_issues]
+            row.qc_summary = "\n".join([f"• {i.message}" for i in qc_issues])
+        except Exception as e:
+            logger.warning(f"QC check failed for row {row_idx}: {e}")
         
         # Update incremental counters
         self._update_stats_delta(old_status, row.status, old_flagged, row.is_flagged)

@@ -39,6 +39,11 @@ class MiniBatchBar(CardWidget):
     show_failed_clicked = Signal()
     retry_clicked = Signal()
     
+    # Report signals (Stage 7)
+    report_copy_markdown = Signal()
+    report_save_markdown = Signal()
+    report_save_json = Signal()
+    
     # Status stage constants (matching BatchController._build_status)
     STAGE_IDLE = "idle"
     STAGE_STARTING = "starting"
@@ -223,6 +228,32 @@ class MiniBatchBar(CardWidget):
         
         self._register_btn(self.clear_btn, self.clear_action, "Temizle", 100)
         layout.addWidget(self.clear_btn)
+        
+        # Report Button (Stage 7)
+        self.report_btn = DropDownPushButton("Rapor")
+        self.report_btn.setIcon(FIF.SAVE_AS)
+        self.report_btn.setFixedWidth(120)
+        
+        self.report_menu = RoundMenu(parent=self)
+        
+        self.report_copy_action = Action(FIF.COPY, "Kopyala (Markdown)")
+        self.report_copy_action.triggered.connect(self.report_copy_markdown.emit)
+        self.report_menu.addAction(self.report_copy_action)
+        
+        self.report_save_md_action = Action(FIF.SAVE, "Kaydet (Markdown)…")
+        self.report_save_md_action.triggered.connect(self.report_save_markdown.emit)
+        self.report_menu.addAction(self.report_save_md_action)
+        
+        self.report_save_json_action = Action(FIF.DOCUMENT, "Kaydet (JSON)…")
+        self.report_save_json_action.triggered.connect(self.report_save_json.emit)
+        self.report_menu.addAction(self.report_save_json_action)
+        
+        self.report_btn.setMenu(self.report_menu)
+        self.report_btn.setVisible(False)  # Initially hidden, shown after batch
+        
+        # Register for responsive layout but keep simple (no overflow action for submenu)
+        self._register_btn(self.report_btn, None, "Rapor", 120)
+        layout.addWidget(self.report_btn)
 
     def _register_btn(self, btn, action, text, width, always_overflow=False):
         """Register a button for responsive layout handling."""
@@ -275,14 +306,18 @@ class MiniBatchBar(CardWidget):
             # Special case for Cancel: always stays on bar (never overflow)
             is_cancel = btn == self.cancel_btn
             
+            # Special case for Report: dropdown buttons should stay on bar (no action for menu)
+            is_report = btn == self.report_btn
+            
             if not logic_visible:
                 btn.setVisible(False)
                 continue
 
-            if is_cancel:
-                # Cancel is always on bar and always has text
+            if is_cancel or is_report:
+                # Cancel and Report always stay on bar
                 btn.setVisible(True)
-                btn.setText(cfg['text'])
+                if hasattr(btn, 'setText') and not is_report:  # DropDown already has text
+                    btn.setText(cfg['text'])
                 btn.setFixedWidth(cfg['width'])
                 btn.setToolTip("")
                 continue
@@ -456,6 +491,10 @@ class MiniBatchBar(CardWidget):
                 
             elif btn == self.detail_btn or btn == self.log_btn:
                 cfg['visible_logic'] = True # Always visible logic-wise
+                
+            elif btn == self.report_btn:
+                # Report visible when batch finished and has data
+                cfg['visible_logic'] = finished
         
         # Refresh Layout based on new logical visibilities
         self._update_buttons()
