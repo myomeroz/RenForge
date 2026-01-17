@@ -1153,10 +1153,11 @@ class BatchController(QObject):
                         categories.append(cat)
                 error_category_counts = dict(Counter(categories))
             
-            # Count QC codes from model
+            # Count QC codes from model and collect row IDs for navigation
             qc_code_counts = {}
             qc_count_updated = 0
             qc_count_total = 0
+            qc_row_ids = []  # Stage 8.2: collect for navigation
             
             try:
                 if hasattr(self.main, 'translate_page') and self.main.translate_page:
@@ -1167,9 +1168,10 @@ class BatchController(QObject):
                             model = model.sourceModel()
                         
                         if hasattr(model, '_rows'):
-                            for row in model._rows:
+                            for idx, row in enumerate(model._rows):
                                 if getattr(row, 'qc_flag', False):
                                     qc_count_total += 1
+                                    qc_row_ids.append(idx)  # Collect row ID
                                     # Count from updated rows only (have translation)
                                     if getattr(row, 'translation', None):
                                         qc_count_updated += 1
@@ -1180,6 +1182,15 @@ class BatchController(QObject):
                                         qc_code_counts[code] = qc_code_counts.get(code, 0) + 1
             except Exception as e:
                 logger.debug(f"Could not count QC codes: {e}")
+            
+            # Collect error row IDs from structured_errors (Stage 8.2)
+            error_row_ids = []
+            for err in self._structured_errors:
+                row_id = err.get('row_id')
+                if row_id is not None:
+                    error_row_ids.append(row_id)
+            error_row_ids = sorted(set(error_row_ids))  # Dedupe and sort
+            qc_row_ids = sorted(set(qc_row_ids))  # Dedupe and sort
             
             # Calculate duration from start time using perf_counter
             import time
@@ -1204,7 +1215,9 @@ class BatchController(QObject):
                 qc_count_total=qc_count_total,
                 duration_ms=duration_ms,
                 error_category_counts=error_category_counts,
-                qc_code_counts=qc_code_counts
+                qc_code_counts=qc_code_counts,
+                error_row_ids=error_row_ids,  # Stage 8.2
+                qc_row_ids=qc_row_ids  # Stage 8.2
             )
             
             # Save to store

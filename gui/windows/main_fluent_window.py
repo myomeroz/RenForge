@@ -628,6 +628,9 @@ class MainFluentWindow(FluentWindow):
         self.health_page.filter_by_error_category.connect(self._on_health_filter_errors)
         self.health_page.filter_by_qc_code.connect(self._on_health_filter_qc)
         
+        # Stage 8.2: Row-specific navigation with filter toggle
+        self.health_page.navigate_to_row_requested.connect(self._on_health_navigate_to_row)
+        
         logger.debug("Health page signals connected")
     
     def _on_health_navigate_translate(self):
@@ -705,6 +708,89 @@ class MainFluentWindow(FluentWindow):
                     return model.sourceModel()
                 return model
         return None
+    
+    def _on_health_navigate_to_row(self, row_id: int, mode: str, apply_filter: bool):
+        """
+        Navigate to a specific row from Health page (Stage 8.2).
+        
+        Args:
+            row_id: Source row index (ParsedFile index)
+            mode: 'error' or 'qc' - determines which filter to apply
+            apply_filter: If True, enable the corresponding filter
+        """
+        if not hasattr(self, 'translate_page') or not self.translate_page:
+            return
+        
+        # Switch to Translate page
+        self.switchTo(self.translate_page)
+        
+        # Apply filter if requested
+        if apply_filter:
+            if mode == "error":
+                if hasattr(self.translate_page, 'error_filter_checkbox'):
+                    self.translate_page.error_filter_checkbox.setChecked(True)
+            elif mode == "qc":
+                if hasattr(self.translate_page, 'qc_checkbox'):
+                    self.translate_page.qc_checkbox.setChecked(True)
+        
+        # Select the row (source index) - use helper if available
+        table_widget = getattr(self.translate_page, 'table_widget', None)
+        if table_widget and hasattr(table_widget, 'table_view'):
+            view = table_widget.table_view
+            
+            # Get the source model
+            proxy_model = view.model()
+            source_model = proxy_model
+            if hasattr(proxy_model, 'sourceModel'):
+                source_model = proxy_model.sourceModel()
+            
+            if hasattr(source_model, 'index'):
+                # Map source index to proxy index for selection
+                source_index = source_model.index(row_id, 0)
+                
+                if hasattr(proxy_model, 'mapFromSource'):
+                    proxy_index = proxy_model.mapFromSource(source_index)
+                    if proxy_index.isValid():
+                        view.selectRow(proxy_index.row())
+                        view.scrollTo(proxy_index)
+                        
+                        # Flash effect
+                        if hasattr(view, 'flash_row'):
+                            view.flash_row(proxy_index.row())
+                        
+                        logger.info(f"Health: Navigated to source row {row_id} (proxy row {proxy_index.row()})")
+                    else:
+                        # Row not visible in current filter - try disabling filter and retry
+                        logger.warning(f"Health: Source row {row_id} not visible in current filter, disabling filter")
+                        
+                        # Disable the filter that was just enabled
+                        if mode == "error":
+                            if hasattr(self.translate_page, 'error_filter_checkbox'):
+                                self.translate_page.error_filter_checkbox.setChecked(False)
+                        elif mode == "qc":
+                            if hasattr(self.translate_page, 'qc_checkbox'):
+                                self.translate_page.qc_checkbox.setChecked(False)
+                        
+                        # Retry mapping after filter disabled
+                        proxy_index = proxy_model.mapFromSource(source_index)
+                        if proxy_index.isValid():
+                            view.selectRow(proxy_index.row())
+                            view.scrollTo(proxy_index)
+                            if hasattr(view, 'flash_row'):
+                                view.flash_row(proxy_index.row())
+                        else:
+                            # Still invalid - show warning
+                            from qfluentwidgets import InfoBar
+                            InfoBar.warning(
+                                title="Uyarı",
+                                content=f"Satır {row_id} modelde bulunamadı",
+                                parent=self.translate_page,
+                                duration=3000
+                            )
+                else:
+                    # No proxy, select directly
+                    view.selectRow(row_id)
+                    view.scrollTo(source_index)
 
     def load_file_to_pages(self, parsed_file):
         """

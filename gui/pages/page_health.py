@@ -137,8 +137,13 @@ class CategoryListCard(CardWidget):
 class TrendListCard(CardWidget):
     """Card showing run history trend as a simple list."""
     
+    # Signal emitted when user selects a run
+    run_selected = Signal(int)  # (run_index)
+    
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
+        
+        self._selected_index = 0  # Currently selected run
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
@@ -182,14 +187,22 @@ class TrendListCard(CardWidget):
             self.items_layout.addWidget(empty)
             return
         
-        for run in runs:
+        self._run_widgets = []  # Store for selection highlighting
+        
+        for idx, run in enumerate(runs):
             row = QHBoxLayout()
             
             # Timestamp (short format)
             ts = run.timestamp
             if ' ' in ts:
                 ts = ts.split(' ')[0]  # Just date
-            row.addWidget(BodyLabel(ts[:10] if len(ts) >= 10 else ts))
+            
+            # Make timestamp clickable
+            ts_btn = PushButton(ts[:10] if len(ts) >= 10 else ts)
+            ts_btn.setFlat(True)
+            ts_btn.setStyleSheet("text-align: left; padding: 2px 4px;")
+            ts_btn.clicked.connect(lambda checked, i=idx: self._on_run_clicked(i))
+            row.addWidget(ts_btn)
             
             row.addStretch()
             
@@ -207,7 +220,25 @@ class TrendListCard(CardWidget):
             
             container = QWidget()
             container.setLayout(row)
+            
+            # Highlight selected row
+            if idx == self._selected_index:
+                container.setStyleSheet("background: rgba(100, 100, 255, 0.2); border-radius: 4px;")
+            
+            self._run_widgets.append(container)
             self.items_layout.addWidget(container)
+    
+    def _on_run_clicked(self, index: int):
+        """Handle run row click."""
+        self._selected_index = index
+        self.run_selected.emit(index)
+        
+        # Update visual selection
+        for i, widget in enumerate(self._run_widgets):
+            if i == index:
+                widget.setStyleSheet("background: rgba(100, 100, 255, 0.2); border-radius: 4px;")
+            else:
+                widget.setStyleSheet("")
 
 
 class HealthPage(QWidget):
@@ -222,9 +253,17 @@ class HealthPage(QWidget):
     filter_by_error_category = Signal(str)  # category name
     filter_by_qc_code = Signal(str)  # QC code
     
+    # New signal for row-specific navigation (Stage 8.2)
+    # Args: (row_id: int, mode: str, apply_filter: bool)
+    navigate_to_row_requested = Signal(int, str, bool)
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("healthPage")
+        
+        # Selected run tracking (Stage 8.2)
+        self._selected_run_index = 0  # 0 = latest run
+        self._selected_run = None     # Current selected RunRecord
         
         self._setup_ui()
         self._connect_signals()
@@ -269,7 +308,7 @@ class HealthPage(QWidget):
         actions_card = CardWidget()
         actions_layout = QHBoxLayout(actions_card)
         actions_layout.setContentsMargins(16, 12, 16, 12)
-        actions_layout.setSpacing(12)
+        actions_layout.setSpacing(8)
         
         actions_label = StrongBodyLabel("Hızlı Eylemler:")
         actions_layout.addWidget(actions_label)
@@ -279,15 +318,27 @@ class HealthPage(QWidget):
         self.copy_report_btn.clicked.connect(self._on_copy_report)
         actions_layout.addWidget(self.copy_report_btn)
         
-        self.goto_error_btn = PushButton("İlk Hataya Git")
-        self.goto_error_btn.setIcon(FIF.CLOSE)
-        self.goto_error_btn.clicked.connect(self._on_goto_first_error)
-        actions_layout.addWidget(self.goto_error_btn)
+        # Error navigation buttons
+        self.goto_first_error_btn = PushButton("İlk Hataya Git")
+        self.goto_first_error_btn.setIcon(FIF.CLOSE)
+        self.goto_first_error_btn.clicked.connect(self._on_goto_first_error)
+        actions_layout.addWidget(self.goto_first_error_btn)
         
-        self.goto_qc_btn = PushButton("İlk QC'ye Git")
-        self.goto_qc_btn.setIcon(FIF.INFO)
-        self.goto_qc_btn.clicked.connect(self._on_goto_first_qc)
-        actions_layout.addWidget(self.goto_qc_btn)
+        self.goto_last_error_btn = PushButton("Son Hataya Git")
+        self.goto_last_error_btn.setIcon(FIF.CLOSE)
+        self.goto_last_error_btn.clicked.connect(self._on_goto_last_error)
+        actions_layout.addWidget(self.goto_last_error_btn)
+        
+        # QC navigation buttons
+        self.goto_first_qc_btn = PushButton("İlk QC'ye Git")
+        self.goto_first_qc_btn.setIcon(FIF.INFO)
+        self.goto_first_qc_btn.clicked.connect(self._on_goto_first_qc)
+        actions_layout.addWidget(self.goto_first_qc_btn)
+        
+        self.goto_last_qc_btn = PushButton("Son QC'ye Git")
+        self.goto_last_qc_btn.setIcon(FIF.INFO)
+        self.goto_last_qc_btn.clicked.connect(self._on_goto_last_qc)
+        actions_layout.addWidget(self.goto_last_qc_btn)
         
         actions_layout.addStretch()
         content_layout.addWidget(actions_card)
@@ -347,7 +398,13 @@ class HealthPage(QWidget):
     
     def _connect_signals(self):
         """Connect internal signals."""
-        pass
+        # Connect run selection from trend list
+        self.trend_card.run_selected.connect(self._on_run_selected)
+    
+    def _on_run_selected(self, index: int):
+        """Handle run selection from trend list."""
+        self._selected_run_index = index
+        self.refresh()  # Refresh to update KPIs for selected run
     
     def _format_duration_ms(self, ms: int) -> str:
         """
@@ -383,29 +440,40 @@ class HealthPage(QWidget):
         store = RunHistoryStore.instance()
         store.ensure_loaded()
         
-        last_run = store.get_last_run()
         runs = store.get_runs(10)
         stats = store.get_aggregated_stats(10)
+        
+        # Get selected run (default to latest)
+        if runs and self._selected_run_index < len(runs):
+            self._selected_run = runs[self._selected_run_index]
+        else:
+            self._selected_run = runs[0] if runs else None
+            self._selected_run_index = 0
         
         # Update empty state
         has_data = len(runs) > 0
         self.empty_state.setVisible(not has_data)
         
-        # Update KPIs from last run
-        if last_run:
-            self.kpi_success.set_value(str(last_run.success_updated))
-            self.kpi_errors.set_value(str(last_run.errors_count))
-            self.kpi_qc.set_value(str(last_run.qc_count_updated))
+        # Update KPIs from selected run
+        if self._selected_run:
+            run = self._selected_run
+            self.kpi_success.set_value(str(run.success_updated))
+            self.kpi_errors.set_value(str(run.errors_count))
+            self.kpi_qc.set_value(str(run.qc_count_updated))
             
-            # Duration formatting - FIXED: d=days, h=hours, m=minutes, s=seconds
-            duration_ms = last_run.duration_ms
-            duration_str = self._format_duration_ms(duration_ms)
+            # Duration formatting
+            duration_str = self._format_duration_ms(run.duration_ms)
             self.kpi_duration.set_value(duration_str)
             
-            # Enable action buttons
+            # Enable action buttons based on selected run
             self.copy_report_btn.setEnabled(True)
-            self.goto_error_btn.setEnabled(last_run.errors_count > 0)
-            self.goto_qc_btn.setEnabled(last_run.qc_count_updated > 0)
+            has_errors = run.errors_count > 0 or len(run.error_row_ids) > 0
+            has_qc = run.qc_count_updated > 0 or len(run.qc_row_ids) > 0
+            
+            self.goto_first_error_btn.setEnabled(has_errors)
+            self.goto_last_error_btn.setEnabled(has_errors)
+            self.goto_first_qc_btn.setEnabled(has_qc)
+            self.goto_last_qc_btn.setEnabled(has_qc)
         else:
             self.kpi_success.set_value("-")
             self.kpi_errors.set_value("-")
@@ -413,8 +481,10 @@ class HealthPage(QWidget):
             self.kpi_duration.set_value("-")
             
             self.copy_report_btn.setEnabled(False)
-            self.goto_error_btn.setEnabled(False)
-            self.goto_qc_btn.setEnabled(False)
+            self.goto_first_error_btn.setEnabled(False)
+            self.goto_last_error_btn.setEnabled(False)
+            self.goto_first_qc_btn.setEnabled(False)
+            self.goto_last_qc_btn.setEnabled(False)
         
         # Update categories
         self.error_categories.set_items(stats.get('error_category_totals', []))
@@ -448,12 +518,48 @@ class HealthPage(QWidget):
                 )
     
     def _on_goto_first_error(self):
-        """Navigate to first error row."""
-        self.navigate_to_first_error.emit()
+        """Navigate to first error row using row ID."""
+        if self._selected_run and self._selected_run.error_row_ids:
+            row_id = self._selected_run.error_row_ids[0]  # First error
+            self.navigate_to_row_requested.emit(row_id, "error", True)
+        else:
+            self.navigate_to_first_error.emit()  # Fallback to old behavior
+    
+    def _on_goto_last_error(self):
+        """Navigate to last error row using row ID."""
+        if self._selected_run and self._selected_run.error_row_ids:
+            row_id = self._selected_run.error_row_ids[-1]  # Last error
+            self.navigate_to_row_requested.emit(row_id, "error", True)
+        else:
+            # No row IDs stored (old run) - show warning
+            InfoBar.warning(
+                title="Uyarı",
+                content="Bu çalışma için satır bilgisi yok (eski run)",
+                parent=self,
+                duration=3000
+            )
     
     def _on_goto_first_qc(self):
-        """Navigate to first QC issue row."""
-        self.navigate_to_first_qc.emit()
+        """Navigate to first QC issue row using row ID."""
+        if self._selected_run and self._selected_run.qc_row_ids:
+            row_id = self._selected_run.qc_row_ids[0]  # First QC
+            self.navigate_to_row_requested.emit(row_id, "qc", True)
+        else:
+            self.navigate_to_first_qc.emit()  # Fallback to old behavior
+    
+    def _on_goto_last_qc(self):
+        """Navigate to last QC issue row using row ID."""
+        if self._selected_run and self._selected_run.qc_row_ids:
+            row_id = self._selected_run.qc_row_ids[-1]  # Last QC
+            self.navigate_to_row_requested.emit(row_id, "qc", True)
+        else:
+            # No row IDs stored (old run) - show warning
+            InfoBar.warning(
+                title="Uyarı",
+                content="Bu çalışma için satır bilgisi yok (eski run)",
+                parent=self,
+                duration=3000
+            )
     
     def _on_category_clicked(self, category_type: str, category_name: str):
         """Handle category item click."""
