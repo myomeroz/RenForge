@@ -335,6 +335,16 @@ class RunDetailsCard(CardWidget):
         self.save_json_btn.setEnabled(False)
         actions_layout.addWidget(self.save_json_btn)
         
+        # Separator or spacing
+        actions_layout.addSpacing(8)
+        
+        # Debug Bundle (Stage 11)
+        self.debug_bundle_btn = PushButton("Debug Bundle")
+        self.debug_bundle_btn.setIcon(FIF.DEVELOPER_TOOLS)
+        self.debug_bundle_btn.setToolTip("Geliştirici paketi kopyala (Loglar + Rapor)")
+        self.debug_bundle_btn.setEnabled(False)
+        actions_layout.addWidget(self.debug_bundle_btn)
+        
         actions_layout.addStretch()
         layout.addLayout(actions_layout)
         
@@ -359,6 +369,7 @@ class RunDetailsCard(CardWidget):
             self.copy_btn.setEnabled(False)
             self.save_md_btn.setEnabled(False)
             self.save_json_btn.setEnabled(False)
+            self.debug_bundle_btn.setEnabled(False)
             return
         
         # Update header
@@ -419,6 +430,7 @@ class RunDetailsCard(CardWidget):
         self.copy_btn.setEnabled(True)
         self.save_md_btn.setEnabled(True)
         self.save_json_btn.setEnabled(True)
+        self.debug_bundle_btn.setEnabled(True)
     
     def _add_item(self, layout, row_id: int, file_line: int, code: str, message: str, mode: str):
         """Add a clickable item row."""
@@ -566,6 +578,7 @@ class HealthPage(QWidget):
         self.run_details.copy_btn.clicked.connect(self._on_copy_report)
         self.run_details.save_md_btn.clicked.connect(self._on_save_report_md)
         self.run_details.save_json_btn.clicked.connect(self._on_save_report_json)
+        self.run_details.debug_bundle_btn.clicked.connect(self._on_copy_debug_bundle)
         grid_layout.addWidget(self.run_details, 2)  # Double width
         
         # Right column: Trend
@@ -811,6 +824,32 @@ class HealthPage(QWidget):
             InfoBar.error(
                 title="Hata",
                 content=f"Kaydetme başarısız: {e}",
+                parent=self
+            )
+            
+    def _on_copy_debug_bundle(self):
+        """Copy debug bundle to clipboard (Stage 11)."""
+        if not self._selected_run:
+            return
+            
+        try:
+            from core.debug_bundle import build_debug_bundle
+            from PySide6.QtGui import QClipboard, QGuiApplication
+            
+            bundle = build_debug_bundle(self._selected_run)
+            QGuiApplication.clipboard().setText(bundle)
+            
+            InfoBar.success(
+                title="Kopyalandı",
+                content="Debug bundle panoya kopyalandı",
+                parent=self,
+                duration=2000
+            )
+        except Exception as e:
+            logger.error(f"Copy debug bundle failed: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"Debug bundle oluşturulamadı: {e}",
                 parent=self
             )
     

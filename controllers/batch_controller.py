@@ -319,6 +319,11 @@ class BatchController(QObject):
             self._last_failed_indices = []
             self._last_run_context = context or {}
             self._cancelled = False
+            
+            # Stage 11: Initialize start time
+            self._batch_start_time = datetime.now()
+            import time
+            self._batch_start_time_mono = time.perf_counter()
         else:
             # For retry, we reset current run counters but KEEP the master failed list derived from previous run
             # actually, simpler: just treat it as a new run that happens to process a subset.
@@ -1153,6 +1158,42 @@ class BatchController(QObject):
                         categories.append(cat)
                 error_category_counts = dict(Counter(categories))
             
+            if hasattr(self, '_batch_start_time_mono') and self._batch_start_time_mono:
+                import time
+                duration_ms = int((time.perf_counter() - self._batch_start_time_mono) * 1000)
+            else:
+                duration_ms = int((datetime.now() - self._batch_start_time).total_seconds() * 1000)
+            
+            # Extract file name context (hardened for Stage 11)
+            file_name_short = None
+            if self._last_run_context.get('file_path'):
+                file_name_short = self._last_run_context['file_path'].replace('\\', '/').split('/')[-1]
+            elif hasattr(self.main, '_get_current_file_data'):
+                current_data = self.main._get_current_file_data()
+                if current_data and current_data.file_path:
+                    file_name_short = current_data.file_path.replace('\\', '/').split('/')[-1]
+            
+            if file_name_short:
+                self._last_run_context['file_name'] = file_name_short
+            
+            if hasattr(self, '_batch_start_time_mono') and self._batch_start_time_mono:
+                import time
+                duration_ms = int((time.perf_counter() - self._batch_start_time_mono) * 1000)
+            else:
+                duration_ms = int((datetime.now() - self._batch_start_time).total_seconds() * 1000)
+            
+            # Extract file name context (hardened for Stage 11)
+            file_name_short = None
+            if self._last_run_context.get('file_path'):
+                file_name_short = self._last_run_context['file_path'].replace('\\', '/').split('/')[-1]
+            elif hasattr(self.main, '_get_current_file_data'):
+                current_data = self.main._get_current_file_data()
+                if current_data and current_data.file_path:
+                    file_name_short = current_data.file_path.replace('\\', '/').split('/')[-1]
+            
+            if file_name_short:
+                self._last_run_context['file_name'] = file_name_short
+            
             # Count QC codes from model and collect row IDs for navigation
             qc_code_counts = {}
             qc_count_updated = 0
@@ -1224,34 +1265,36 @@ class BatchController(QObject):
             except Exception as e:
                 logger.debug(f"Could not build QC items: {e}")
             
-            # Calculate duration from start time using perf_counter
+            # Calculate duration from start time using perf_counter (Stage 11)
             import time
             duration_ms = 0
-            if self._batch_start_time:
-                duration_ms = int((time.perf_counter() - self._batch_start_time) * 1000)
+            if hasattr(self, '_batch_start_time_mono') and self._batch_start_time_mono:
+                duration_ms = int((time.perf_counter() - self._batch_start_time_mono) * 1000)
+            elif self._batch_start_time:
+                duration_ms = int((datetime.now() - self._batch_start_time).total_seconds() * 1000)
             
             # Create record
             record = RunRecord(
                 timestamp=datetime.now().isoformat(sep=' ', timespec='seconds'),
-                file_name=file_name,
-                file_path=file_path,
-                provider=ctx.get('engine') or ctx.get('provider'),
-                model=ctx.get('model'),
-                source_lang=ctx.get('source_lang'),
-                target_lang=ctx.get('target_lang'),
-                chunk_size=ctx.get('chunk_size'),
                 processed=self._total_processed,
-                success_updated=self._success_count,
+                success_updated=(self._total_processed - len(self._structured_errors)),
                 errors_count=len(self._structured_errors),
                 qc_count_updated=qc_count_updated,
                 qc_count_total=qc_count_total,
                 duration_ms=duration_ms,
-                error_category_counts=error_category_counts,
-                qc_code_counts=qc_code_counts,
-                error_row_ids=error_row_ids,  # Stage 8.2
-                qc_row_ids=qc_row_ids,  # Stage 8.2
+                file_name=self._last_run_context.get('file_name'),
+                file_path=self._last_run_context.get('file_path'),
+                provider=self._last_run_context.get('provider') or self._last_run_context.get('engine'),
+                model=self._last_run_context.get('model'),
+                source_lang=self._last_run_context.get('source_lang'),
+                target_lang=self._last_run_context.get('target_lang'),
+                chunk_size=self._last_run_context.get('chunk_size'),
                 error_items=error_items,  # Stage 9
-                qc_items=qc_items  # Stage 9
+                qc_items=qc_items,        # Stage 9
+                error_row_ids=error_row_ids,  # Stage 8.2
+                qc_row_ids=qc_row_ids,        # Stage 8.2
+                error_category_counts=error_category_counts,
+                qc_code_counts=qc_code_counts
             )
             
             # Save to store

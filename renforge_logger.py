@@ -47,6 +47,31 @@ class StartupBufferHandler(logging.Handler):
         _startup_buffer.append(record)
 
 
+
+class RingBufferHandler(logging.Handler):
+    """
+    Handler that feeds the global LogRingBuffer.
+    Filters for 'renforge' loggers only.
+    """
+    def __init__(self):
+        super().__init__()
+        # We want to capture everything for debug bundle
+        self.setLevel(logging.DEBUG) 
+    
+    def emit(self, record):
+        # Filter: Only renforge* loggers
+        if not record.name.startswith("renforge"):
+            return
+            
+        try:
+            # Lazy import to avoid circular dependency
+            from core.log_store import instance as get_buffer
+            buffer = get_buffer()
+            buffer.append(record)
+        except (ImportError, Exception):
+            # Don't crash logging if core isn't ready
+            pass
+
 def _configure_root_logger():
     """Configure the root 'renforge' logger with handlers (once only)."""
     global _root_configured
@@ -69,13 +94,18 @@ def _configure_root_logger():
     file_handler.setLevel(logging.DEBUG)  # Dosyaya tüm seviyeleri yaz
     file_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
     
-    # Startup Buffer Handler (YENİ)
+    # Startup Buffer Handler (YENİ - Stage 10)
     # Stores logs until Inspector is ready
     buffer_handler = StartupBufferHandler()
+    
+    # Ring Buffer Handler (Stage 11)
+    # Feeds global buffer for Debug Bundle
+    ring_handler = RingBufferHandler()
     
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
     root_logger.addHandler(buffer_handler)
+    root_logger.addHandler(ring_handler)
     
     _root_configured = True
 
