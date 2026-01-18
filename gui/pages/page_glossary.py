@@ -96,16 +96,21 @@ class AddTermDialog(QDialog):
 
 class EnforcePreviewDialog(QDialog):
     """
-    Glossary Enforce Önizleme Dialog (Stage 18)
+    Glossary Enforce Önizleme Dialog (Stage 18 + 18.1)
     
     Kullanıcıya metinleri girmesini ve glossary enforce
     sonuçlarını önizlemesini sağlar.
+    
+    Stage 18.1 Güncellemeleri:
+    - Kopyala ve Çeviriye Uygula butonları ayrıldı
+    - Applied terms listesi eklendi
+    - Highlight span iyileştirmesi
     """
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Glossary Enforce Önizleme")
-        self.setMinimumSize(700, 500)
+        self.setMinimumSize(750, 600)
         
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -135,6 +140,22 @@ class EnforcePreviewDialog(QDialog):
         self.summary_label.setStyleSheet("color: #888888; padding: 8px;")
         layout.addWidget(self.summary_label)
         
+        # Applied terms listesi (Stage 18.1)
+        self.terms_label = BodyLabel("")
+        self.terms_label.setWordWrap(True)
+        self.terms_label.setStyleSheet("""
+            QLabel {
+                color: #aaaaaa;
+                background-color: #252526;
+                border: 1px solid #3c3c3c;
+                border-radius: 4px;
+                padding: 8px;
+                font-family: 'Consolas', 'Courier New', monospace;
+            }
+        """)
+        self.terms_label.setMaximumHeight(100)
+        layout.addWidget(self.terms_label)
+        
         # Önizleme sonucu
         layout.addWidget(BodyLabel("Önizleme Sonucu (Preview):"))
         self.preview_edit = QTextEdit()
@@ -149,14 +170,24 @@ class EnforcePreviewDialog(QDialog):
         """)
         layout.addWidget(self.preview_edit)
         
-        # Butonlar
+        # Butonlar (Stage 18.1: ayrı butonlar)
         btn_layout = QHBoxLayout()
         
-        self.copy_btn = PushButton("Uygula ve Kopyala")
+        # Kopyala butonu
+        self.copy_btn = PushButton("Kopyala")
         self.copy_btn.setIcon(FIF.COPY)
+        self.copy_btn.setToolTip("Önizleme sonucunu panoya kopyala")
         self.copy_btn.setEnabled(False)
         self.copy_btn.clicked.connect(self._on_copy)
         btn_layout.addWidget(self.copy_btn)
+        
+        # Çeviriye Uygula butonu
+        self.apply_btn = PushButton("Çeviriye Uygula")
+        self.apply_btn.setIcon(FIF.ACCEPT)
+        self.apply_btn.setToolTip("Mevcut Çeviri alanını önizleme sonucu ile doldur")
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.clicked.connect(self._on_apply_to_translation)
+        btn_layout.addWidget(self.apply_btn)
         
         btn_layout.addStretch()
         
@@ -167,6 +198,7 @@ class EnforcePreviewDialog(QDialog):
         layout.addLayout(btn_layout)
         
         self._preview_text = ""
+        self._last_result = None  # Son önizleme sonucu
     
     def _on_preview(self):
         """Önizleme hesapla ve göster."""
@@ -184,20 +216,20 @@ class EnforcePreviewDialog(QDialog):
             return
         
         try:
-            from core.glossary_preview import preview_enforce, extract_placeholders
+            from core.glossary_preview import (
+                preview_enforce, format_applied_terms, compute_highlight_spans
+            )
             
             result = preview_enforce(source, target)
+            self._last_result = result
             
             # Önizleme sonucunu göster
             self._preview_text = result.preview_text
             self.preview_edit.setPlainText(result.preview_text)
             
-            # Özet oluştur
+            # Özet oluştur (kısa versiyon)
             applied_count = result.total_applied
             blocked_count = result.total_blocked
-            terms_info = ", ".join([f"{t.term_src}→{t.term_dst}" for t in result.applied_terms[:3]])
-            if len(result.applied_terms) > 3:
-                terms_info += f" (+{len(result.applied_terms) - 3} daha)"
             
             summary_parts = []
             if applied_count > 0:
@@ -207,13 +239,19 @@ class EnforcePreviewDialog(QDialog):
             
             if blocked_count > 0:
                 blocked_list = ", ".join(result.blocked_segments[:3])
+                if len(result.blocked_segments) > 3:
+                    blocked_list += f" (+{len(result.blocked_segments) - 3})"
                 summary_parts.append(f"🛡️ {blocked_count} placeholder korundu: {blocked_list}")
             
-            if terms_info:
-                summary_parts.append(f"📝 Terimler: {terms_info}")
+            self.summary_label.setText(" | ".join(summary_parts))
             
-            self.summary_label.setText("\n".join(summary_parts))
+            # Applied terms listesi (Stage 18.1)
+            terms_text = format_applied_terms(result.applied_terms, max_items=20)
+            self.terms_label.setText(terms_text)
+            
+            # Butonları etkinleştir
             self.copy_btn.setEnabled(True)
+            self.apply_btn.setEnabled(True)
             
         except Exception as e:
             logger.error(f"Preview failed: {e}")
@@ -237,6 +275,19 @@ class EnforcePreviewDialog(QDialog):
                 duration=2000,
                 position=InfoBarPosition.TOP
             )
+    
+    def _on_apply_to_translation(self):
+        """Önizleme sonucunu Mevcut Çeviri alanına uygula (Stage 18.1)."""
+        if self._preview_text:
+            self.target_edit.setPlainText(self._preview_text)
+            InfoBar.success(
+                title="Uygulandı",
+                content="Önizleme sonucu çeviri alanına uygulandı",
+                parent=self,
+                duration=2000,
+                position=InfoBarPosition.TOP
+            )
+
 
 
 class GlossaryPage(QWidget):
