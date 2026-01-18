@@ -62,6 +62,11 @@ class RunRecord:
     # Report paths (optional)
     last_report_md_path: Optional[str] = None
     last_report_json_path: Optional[str] = None
+    
+    # Re-run tracking (Stage 14)
+    parent_run_id: Optional[str] = None    # If this run is a rerun, points to original
+    rerun_reason: Optional[str] = None     # "same_settings", "safe_mode", "action_center"
+    retry_profile: Optional[str] = None    # "Kapalı", "Yumuşak", "Agresif"
 
 
 # =============================================================================

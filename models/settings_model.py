@@ -59,7 +59,10 @@ class SettingsModel:
     # Keyboard Shortcuts
     KEY_SHORTCUTS = "keyboard_shortcuts"  # Dict[str, str] - action_id -> sequence string
     KEY_SHORTCUTS_ENABLED = "keyboard_shortcuts_enabled"  # bool - global toggle
-
+    
+    # Retry Policy (Stage 14)
+    KEY_RETRY_PROFILE = "retry_profile"  # str - "Kapalı" / "Yumuşak" / "Agresif"
+    KEY_BATCH_CHUNK_SIZE = "batch_chunk_size"  # int - default chunk size for batch
     def __new__(cls) -> 'SettingsModel':
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -121,6 +124,9 @@ class SettingsModel:
             # Shortcuts logic
             self.KEY_SHORTCUTS: {},  # Empty means use manager defaults
             self.KEY_SHORTCUTS_ENABLED: True,
+            # Retry Policy (Stage 14)
+            self.KEY_RETRY_PROFILE: "Yumuşak",
+            self.KEY_BATCH_CHUNK_SIZE: 20,
         }
     
     def _load(self):
@@ -470,6 +476,28 @@ class SettingsModel:
     @keyboard_shortcuts_enabled.setter
     def keyboard_shortcuts_enabled(self, value: bool):
         self.set(self.KEY_SHORTCUTS_ENABLED, value)
+    
+    # =========================================================================
+    # RETRY POLICY (Stage 14)
+    # =========================================================================
+    
+    @property
+    def retry_profile(self) -> str:
+        """Get retry profile name."""
+        return self._settings.get(self.KEY_RETRY_PROFILE, "Yumuşak")
+    
+    @retry_profile.setter
+    def retry_profile(self, value: str):
+        self.set(self.KEY_RETRY_PROFILE, value)
+    
+    @property
+    def batch_chunk_size(self) -> int:
+        """Get default batch chunk size."""
+        return self._settings.get(self.KEY_BATCH_CHUNK_SIZE, 20)
+    
+    @batch_chunk_size.setter
+    def batch_chunk_size(self, value: int):
+        self.set(self.KEY_BATCH_CHUNK_SIZE, max(1, min(100, value)))
     
     def __repr__(self) -> str:
         return f"SettingsModel(dirty={self._dirty})"

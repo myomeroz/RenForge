@@ -890,6 +890,156 @@ class InsightActionCard(CardWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+
+class QueueCard(CardWidget):
+    """Card showing rerun queue status and controls (Stage 15)."""
+    
+    # Signals
+    start_queue = Signal()
+    pause_queue = Signal()
+    resume_queue = Signal()
+    cancel_all = Signal()
+    auto_retry = Signal()  # Auto-retry selected run
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(12)
+        
+        # Header
+        header = QHBoxLayout()
+        header.addWidget(StrongBodyLabel("Yeniden Deneme Kuyruğu"))
+        header.addStretch()
+        
+        self.status_label = BodyLabel("Hazır")
+        self.status_label.setStyleSheet("color: #888;")
+        header.addWidget(self.status_label)
+        
+        layout.addLayout(header)
+        
+        # Control buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
+        
+        self.start_btn = PushButton("Başlat")
+        self.start_btn.setIcon(FIF.PLAY)
+        self.start_btn.clicked.connect(self.start_queue.emit)
+        btn_layout.addWidget(self.start_btn)
+        
+        self.pause_btn = PushButton("Duraklat")
+        self.pause_btn.setIcon(FIF.PAUSE)
+        self.pause_btn.clicked.connect(self.pause_queue.emit)
+        self.pause_btn.setVisible(False)
+        btn_layout.addWidget(self.pause_btn)
+        
+        self.resume_btn = PushButton("Devam")
+        self.resume_btn.setIcon(FIF.PLAY)
+        self.resume_btn.clicked.connect(self.resume_queue.emit)
+        self.resume_btn.setVisible(False)
+        btn_layout.addWidget(self.resume_btn)
+        
+        self.cancel_btn = PushButton("Tümünü İptal")
+        self.cancel_btn.setIcon(FIF.CLOSE)
+        self.cancel_btn.clicked.connect(self.cancel_all.emit)
+        btn_layout.addWidget(self.cancel_btn)
+        
+        btn_layout.addStretch()
+        
+        self.auto_retry_btn = PushButton("Otomatik Retry")
+        self.auto_retry_btn.setToolTip("Seçili run için önce retry_failed, hata kalırsa safe_mode uygula")
+        self.auto_retry_btn.clicked.connect(self.auto_retry.emit)
+        btn_layout.addWidget(self.auto_retry_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # Task list
+        self.task_list = QVBoxLayout()
+        self.task_list.setSpacing(4)
+        layout.addLayout(self.task_list)
+        
+        self._pending_count = 0
+    
+    def update_from_snapshot(self, snapshot):
+        """Update card from QueueSnapshot."""
+        self._pending_count = snapshot.pending_count
+        
+        # Update status
+        if snapshot.is_running:
+            if snapshot.is_paused:
+                self.status_label.setText(f"⏸️ Duraklatıldı ({snapshot.pending_count} beklemede)")
+            else:
+                self.status_label.setText(f"▶️ Çalışıyor ({snapshot.pending_count} beklemede)")
+        else:
+            self.status_label.setText(f"⏹️ Beklemede ({snapshot.pending_count} görev)")
+        
+        # Update button visibility
+        is_running = snapshot.is_running and not snapshot.is_paused
+        self.start_btn.setVisible(not snapshot.is_running)
+        self.pause_btn.setVisible(is_running)
+        self.resume_btn.setVisible(snapshot.is_running and snapshot.is_paused)
+        
+        # Update task list
+        self._update_task_list(snapshot.tasks)
+    
+    def _update_task_list(self, tasks):
+        """Update the displayed task list."""
+        # Clear existing
+        while self.task_list.count():
+            item = self.task_list.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Show last 5 tasks
+        visible_tasks = tasks[-5:] if len(tasks) > 5 else tasks
+        
+        if not visible_tasks:
+            lbl = BodyLabel("Kuyrukta görev yok")
+            lbl.setStyleSheet("color: #888; font-style: italic;")
+            self.task_list.addWidget(lbl)
+            return
+        
+        for task in reversed(visible_tasks):  # Newest first
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            
+            # Status icon
+            status_icons = {
+                "pending": "⏳",
+                "running": "▶️",
+                "success": "✅",
+                "failed": "❌",
+                "canceled": "🚫",
+                "paused": "⏸️"
+            }
+            icon = BodyLabel(status_icons.get(task.status, "❓"))
+            row.addWidget(icon)
+            
+            # File and mode
+            file_name = task.file_basename or "?"
+            mode_labels = {
+                "retry_failed": "Retry",
+                "safe_mode": "Safe",
+                "rerun_same_context": "Rerun"
+            }
+            mode_lbl = mode_labels.get(task.mode, task.mode)
+            info = BodyLabel(f"{file_name[:20]} | {mode_lbl}")
+            info.setStyleSheet("font-size: 12px;")
+            row.addWidget(info)
+            
+            row.addStretch()
+            
+            # Progress
+            if task.progress_total > 0:
+                prog = BodyLabel(f"{task.progress_done}/{task.progress_total}")
+                prog.setStyleSheet("color: #666; font-size: 11px;")
+                row.addWidget(prog)
+            
+            container = QWidget()
+            container.setLayout(row)
+            self.task_list.addWidget(container)
+
 class HealthPage(QWidget):
     """
     Health dashboard page showing project stats and run history.
@@ -1034,6 +1184,20 @@ class HealthPage(QWidget):
         self.insight_card = InsightActionCard()
         self.insight_card.action_requested.connect(self._on_insight_action)
         middle_layout.addWidget(self.insight_card)
+        
+        # Queue Card (Stage 15)
+        self.queue_card = QueueCard()
+        self.queue_card.start_queue.connect(self._on_queue_start)
+        self.queue_card.pause_queue.connect(self._on_queue_pause)
+        self.queue_card.resume_queue.connect(self._on_queue_resume)
+        self.queue_card.cancel_all.connect(self._on_queue_cancel_all)
+        self.queue_card.auto_retry.connect(self._on_queue_auto_retry)
+        middle_layout.addWidget(self.queue_card)
+        
+        # Connect to queue updates
+        from core.rerun_queue import RerunQueue
+        self._queue = RerunQueue.instance()
+        self._queue.queue_updated.connect(self._on_queue_updated)
         
         middle_layout.addStretch() # Ensure cards are top-aligned if meaningful
         
@@ -1398,10 +1562,14 @@ class HealthPage(QWidget):
         self.navigate_to_row_requested.emit(row_id, mode, True)
     
     def _on_insight_action(self, action_id: str, payload: dict):
-        """Handle insight action button click (Stage 13)."""
+        """Handle insight action button click (Stage 13/14)."""
         logger.info(f"Insight action: {action_id} with payload {payload}")
         
-        if action_id == "RETRY_FAILED":
+        if action_id == "RERUN_SAME":
+            self._handle_action_rerun("same_settings")
+        elif action_id == "RERUN_SAFE":
+            self._handle_action_rerun("safe_mode")
+        elif action_id == "RETRY_FAILED":
             self._handle_action_retry_failed()
         elif action_id == "SET_CHUNK_10":
             self._handle_action_set_chunk(10)
@@ -1495,6 +1663,210 @@ class HealthPage(QWidget):
             InfoBar.error(
                 title="Hata",
                 content=f"Provider değiştirilemedi: {e}",
+                parent=self,
+                duration=3000
+            )
+    
+    def _handle_action_rerun(self, mode: str):
+        """Handle rerun action for Stage 14."""
+        if not self._selected_run:
+            InfoBar.warning(
+                title="Uyarı",
+                content="Yeniden çalıştırmak için bir çalışma seçin.",
+                parent=self,
+                duration=3000
+            )
+            return
+        
+        try:
+            # Get batch controller from main window
+            main_window = self.window()
+            if not main_window or not hasattr(main_window, 'batch_controller'):
+                InfoBar.error(
+                    title="Hata",
+                    content="Batch controller bulunamadı.",
+                    parent=self,
+                    duration=3000
+                )
+                return
+            
+            batch_controller = main_window.batch_controller
+            
+            # Check if file is loaded
+            if not hasattr(main_window, 'current_file_path') or not main_window.current_file_path:
+                InfoBar.warning(
+                    title="Dosya Açık Değil",
+                    content="Bu run için dosya açık değil. Lütfen ilgili dosyayı açın.",
+                    parent=self,
+                    duration=4000
+                )
+                return
+            
+            # Prepare rerun
+            success = batch_controller.rerun_from_selected_run(mode, self._selected_run)
+            
+            if success:
+                mode_label = "Aynı Ayarlar" if mode == "same_settings" else "Güvenli Mod"
+                InfoBar.success(
+                    title="Yeniden Çalıştırma Hazırlandı",
+                    content=f"Mod: {mode_label}. Çeviri sayfasından 'Toplu Çevir' ile başlatın.",
+                    parent=self,
+                    duration=4000
+                )
+            else:
+                InfoBar.error(
+                    title="Hata",
+                    content="Yeniden çalıştırma başlatılamadı.",
+                    parent=self,
+                    duration=3000
+                )
+                
+        except Exception as e:
+            logger.error(f"Failed to rerun: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"Yeniden çalıştırma hatası: {e}",
+                parent=self,
+                duration=3000
+            )
+    
+    # =========================================================================
+    # QUEUE HANDLERS (Stage 15)
+    # =========================================================================
+    
+    def _on_queue_updated(self, snapshot):
+        """Handle queue snapshot update."""
+        self.queue_card.update_from_snapshot(snapshot)
+    
+    def _on_queue_start(self):
+        """Start the rerun queue."""
+        from core.rerun_queue import RerunQueue
+        
+        queue = RerunQueue.instance()
+        
+        # Set execute callback if not set
+        main_window = self.window()
+        if main_window and hasattr(main_window, 'batch_controller'):
+            queue.set_execute_callback(main_window.batch_controller.execute_rerun_task)
+        
+        queue.start()
+        
+        InfoBar.success(
+            title="Kuyruk Başlatıldı",
+            content="Yeniden deneme kuyruğu çalışıyor",
+            parent=self,
+            duration=2000
+        )
+    
+    def _on_queue_pause(self):
+        """Pause the rerun queue."""
+        from core.rerun_queue import RerunQueue
+        RerunQueue.instance().pause()
+        
+        InfoBar.info(
+            title="Kuyruk Duraklatıldı",
+            content="Mevcut görev tamamlandıktan sonra bekleyecek",
+            parent=self,
+            duration=2000
+        )
+    
+    def _on_queue_resume(self):
+        """Resume the rerun queue."""
+        from core.rerun_queue import RerunQueue
+        RerunQueue.instance().resume()
+        
+        InfoBar.success(
+            title="Kuyruk Devam Ediyor",
+            content="Bekleyen görevler işlenecek",
+            parent=self,
+            duration=2000
+        )
+    
+    def _on_queue_cancel_all(self):
+        """Cancel all queued tasks."""
+        from core.rerun_queue import RerunQueue
+        RerunQueue.instance().cancel_all()
+        
+        InfoBar.warning(
+            title="Tüm Görevler İptal Edildi",
+            content="Kuyruk temizlendi",
+            parent=self,
+            duration=2000
+        )
+    
+    def _on_queue_auto_retry(self):
+        """Auto-retry selected run with pipeline."""
+        if not self._selected_run:
+            InfoBar.warning(
+                title="Uyarı",
+                content="Önce bir çalışma seçin",
+                parent=self,
+                duration=3000
+            )
+            return
+        
+        if self._selected_run.errors_count == 0:
+            InfoBar.info(
+                title="Bilgi",
+                content="Seçili çalışmada hata yok",
+                parent=self,
+                duration=3000
+            )
+            return
+        
+        try:
+            from core.rerun_queue import RerunQueue
+            
+            main_window = self.window()
+            if not main_window or not hasattr(main_window, 'batch_controller'):
+                InfoBar.error(
+                    title="Hata",
+                    content="Batch controller bulunamadı",
+                    parent=self,
+                    duration=3000
+                )
+                return
+            
+            batch_controller = main_window.batch_controller
+            queue = RerunQueue.instance()
+            
+            # Set execute callback
+            queue.set_execute_callback(batch_controller.execute_rerun_task)
+            
+            # Create task with auto-followup enabled
+            task = batch_controller.create_rerun_task_from_selected_run(
+                mode="retry_failed",
+                run=self._selected_run,
+                auto_followup=True  # Will enqueue safe_mode on failure
+            )
+            
+            # Enqueue
+            added = queue.enqueue(task)
+            
+            if added:
+                InfoBar.success(
+                    title="Görev Eklendi",
+                    content=f"Auto-retry pipeline kuyruğa eklendi ({len(task.row_ids)} satır)",
+                    parent=self,
+                    duration=3000
+                )
+                
+                # Auto-start queue if not running
+                if not queue.get_snapshot().is_running:
+                    queue.start()
+            else:
+                InfoBar.warning(
+                    title="Zaten Kuyrukta",
+                    content="Bu çalışma için aynı görev zaten bekliyor",
+                    parent=self,
+                    duration=3000
+                )
+                
+        except Exception as e:
+            logger.error(f"[QUEUE] Auto-retry failed: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"Auto-retry hatası: {e}",
                 parent=self,
                 duration=3000
             )

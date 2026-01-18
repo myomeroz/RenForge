@@ -501,6 +501,182 @@ class BatchController(QObject):
         else:
             self._set_running(False, reason="worker_start_failed")
     
+    def rerun_from_selected_run(self, mode: str, run) -> bool:
+        """
+        Re-run batch translation based on a previous run (Stage 14).
+        
+        Args:
+            mode: "same_settings" or "safe_mode"
+            run: RunRecord from which to extract settings
+        
+        Returns:
+            True if rerun was started successfully
+        """
+        logger.info(f"[BatchController] Rerun requested: mode={mode}, run={run.timestamp}")
+        
+        # Check if a batch is already running
+        if self._is_running:
+            logger.warning("[BatchController] Cannot start rerun: batch already running")
+            return False
+        
+        # Check if file is loaded
+        if not hasattr(self.main, 'current_file_path') or not self.main.current_file_path:
+            logger.warning("[BatchController] Cannot start rerun: no file loaded")
+            return False
+        
+        # Import required modules
+        from core.retry_policy import get_policy
+        from models.settings_model import SettingsModel
+        
+        settings = SettingsModel.instance()
+        
+        # Prepare context from run
+        context = {
+            'provider': run.provider or 'gemini',
+            'model': run.model or settings.default_model,
+            'source_lang': run.source_lang or settings.default_source_language,
+            'target_lang': run.target_lang or settings.default_target_language,
+            'file_name': run.file_name,
+            'file_path': run.file_path,
+            'parent_run_id': run.timestamp,  # Use timestamp as ID
+            'rerun_reason': mode,
+        }
+        
+        if mode == "same_settings":
+            # Use original settings
+            context['chunk_size'] = run.chunk_size or settings.batch_chunk_size
+            context['retry_profile'] = run.retry_profile or settings.retry_profile
+        elif mode == "safe_mode":
+            # Safe mode: smaller chunks, aggressive retry
+            original_chunk = run.chunk_size if run.chunk_size else settings.batch_chunk_size
+            context['chunk_size'] = min(original_chunk, 10)
+            context['retry_profile'] = "Agresif"
+        else:
+            logger.warning(f"[BatchController] Unknown rerun mode: {mode}")
+            return False
+        
+        # Store context for use during batch
+        self._last_run_context = context
+        self._rerun_parent_id = run.timestamp
+        self._rerun_reason = mode
+        
+        logger.info(f"[BatchController] Rerun context prepared: {context}")
+        
+        # Trigger the actual batch - caller is responsible for starting the batch
+        # This method just prepares the context; UI should call actual batch start
+        return True
+    
+    def get_rerun_context(self) -> dict:
+        """Get the prepared rerun context (for UI to use when starting batch)."""
+        return self._last_run_context.copy() if self._last_run_context else {}
+    
+    def create_rerun_task_from_selected_run(self, mode: str, run, auto_followup: bool = False):
+        """
+        Create a RerunTask from a selected run (Stage 15).
+        
+        Args:
+            mode: "retry_failed", "safe_mode", or "rerun_same_context"
+            run: RunRecord to base the task on
+            auto_followup: If True, auto-enqueue safe_mode on failure
+        
+        Returns:
+            RerunTask ready for queue
+        """
+        import uuid
+        from datetime import datetime
+        from core.rerun_queue import RerunTask
+        from core.retry_policy import get_policy
+        from models.settings_model import SettingsModel
+        
+        settings = SettingsModel.instance()
+        
+        # Determine row_ids
+        row_ids = []
+        if mode in ("retry_failed", "safe_mode"):
+            # Get failed row IDs from run
+            if run.error_row_ids:
+                row_ids = list(run.error_row_ids)
+            elif run.error_items:
+                row_ids = [e.get('row_id', -1) for e in run.error_items if e.get('row_id', -1) >= 0]
+        
+        # Build context
+        context = {
+            'provider': run.provider or 'gemini',
+            'model': run.model or settings.default_model,
+            'source_lang': run.source_lang or settings.default_source_language,
+            'target_lang': run.target_lang or settings.default_target_language,
+            'file_name': run.file_name,
+            'file_path': run.file_path,
+            'parent_run_id': run.timestamp,
+        }
+        
+        if mode == "retry_failed":
+            context['chunk_size'] = run.chunk_size or settings.batch_chunk_size
+            context['retry_profile'] = run.retry_profile or settings.retry_profile
+        elif mode == "safe_mode":
+            # Safe mode: smaller chunks, aggressive retry
+            original_chunk = run.chunk_size if run.chunk_size else settings.batch_chunk_size
+            context['chunk_size'] = min(original_chunk, 10)
+            context['retry_profile'] = "Agresif"
+        else:  # rerun_same_context
+            context['chunk_size'] = run.chunk_size or settings.batch_chunk_size
+            context['retry_profile'] = run.retry_profile or settings.retry_profile
+            # For full rerun, don't filter by row_ids
+            row_ids = []
+        
+        task = RerunTask(
+            task_id=str(uuid.uuid4()),
+            created_at_iso=datetime.now().isoformat(),
+            source_run_id=run.timestamp,
+            file_path=run.file_path,
+            file_basename=run.file_name,
+            row_ids=row_ids,
+            mode=mode,
+            context=context,
+            auto_followup=auto_followup,
+            progress_total=len(row_ids) if row_ids else run.processed
+        )
+        
+        logger.info(f"[QUEUE] Created task: {task.task_id} mode={mode} rows={len(row_ids)}")
+        return task
+    
+    def execute_rerun_task(self, task):
+        """
+        Execute a RerunTask (called by queue) (Stage 15).
+        
+        This starts the actual batch operation for the task.
+        """
+        from core.rerun_queue import RerunQueue
+        
+        logger.info(f"[QUEUE] Executing task: {task.task_id} mode={task.mode}")
+        
+        # Check if file is loaded
+        if not hasattr(self.main, 'current_file_path') or not self.main.current_file_path:
+            logger.warning(f"[QUEUE] No file loaded for task: {task.task_id}")
+            RerunQueue.instance().on_task_complete(task.task_id, False, "Dosya açık değil")
+            return
+        
+        # Store context
+        self._last_run_context = task.context.copy()
+        self._current_queue_task_id = task.task_id
+        
+        # Determine which rows to process
+        if task.mode in ("retry_failed", "safe_mode") and task.row_ids:
+            # Retry specific rows
+            self._last_failed_indices = task.row_ids
+            self.retry_failed_last_run()
+        else:
+            # Full rerun - trigger batch on all rows
+            # This would require integration with the main window's batch trigger
+            # For now, signal that we need the main window to start the batch
+            logger.info(f"[QUEUE] Full rerun not yet implemented, treating as retry_failed")
+            if task.row_ids:
+                self._last_failed_indices = task.row_ids
+                self.retry_failed_last_run()
+            else:
+                RerunQueue.instance().on_task_complete(task.task_id, False, "Yeniden çalıştırılacak satır yok")
+
+    
     @property
     def errors(self):
         return self._errors
