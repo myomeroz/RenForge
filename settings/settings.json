@@ -17,16 +17,18 @@
     "keyboard_shortcuts_enabled": true,
     "retry_profile": "Yumuşak",
     "batch_chunk_size": 10,
+    "tm_enabled": true,
+    "tm_auto_apply_exact": true,
+    "glossary_enabled": true,
+    "glossary_mode": "qc_only",
     "api_key_set": false,
     "window_state": "000000ff00000000fd000000010000000100000164000003b1fc0200000001fc0000001d000003b10000019f0100001efa000000020200000005fb000000200064006f0063006b005f007400720061006e0073006c006100740069006f006e0100000000ffffffff0000014f00fffffffb000000160064006f0063006b005f0072006500760069006500770100000000ffffffff0000018000fffffffb000000180064006f0063006b005f007100750061006c0069007400790100000000ffffffff000000d100fffffffb000000200064006f0063006b005f0063006f006e00730069007300740065006e006300790100000000ffffffff000000d700fffffffb0000001a0064006f0063006b005f00730065007400740069006e006700730100000000ffffffff0000010500ffffff00000543000003b100000004000000040000000800000008fc00000000",
     "gemini_api_key": "AIzaSyCf7K1MrBhXAdLUU9L1qLNFXZvAcrCi33Y",
     "gemini_model": "gemini-2.0-flash",
-    "session_open_tabs": [
+    "session_open_tabs": [],
+    "recent_files": [
+        "D:/Kodlama/RnpyCeviri/Cevir/1.rpy",
         "D:/Kodlama/RnpyCeviri/Cevir/2.rpy"
     ],
-    "recent_files": [
-        "D:/Kodlama/RnpyCeviri/Cevir/2.rpy",
-        "D:/Kodlama/RnpyCeviri/Cevir/1.rpy"
-    ],
-    "session_active_tab": "D:/Kodlama/RnpyCeviri/Cevir/2.rpy"
+    "session_active_tab": null
 }

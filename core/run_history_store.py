@@ -67,6 +67,14 @@ class RunRecord:
     parent_run_id: Optional[str] = None    # If this run is a rerun, points to original
     rerun_reason: Optional[str] = None     # "same_settings", "safe_mode", "action_center"
     retry_profile: Optional[str] = None    # "Kapalı", "Yumuşak", "Agresif"
+    
+    # Translation Memory metrics (Stage 16.1)
+    tm_hits: int = 0        # Number of TM lookups that found a match
+    tm_applied: int = 0     # Number of rows where TM translation was applied
+    
+    # Glossary metrics (Stage 16.2)
+    glossary_misses: int = 0      # Number of glossary term misses
+    glossary_violations: int = 0  # Number of glossary violations
 
 
 # =============================================================================
@@ -74,11 +82,9 @@ class RunRecord:
 # =============================================================================
 
 def get_global_history_path() -> Path:
-    """Get global run history file path (~/.renforge/run_history.json)."""
-    home = Path.home()
-    renforge_dir = home / ".renforge"
-    renforge_dir.mkdir(exist_ok=True)
-    return renforge_dir / "run_history.json"
+    """Global run history dosya yolunu döndür (uygulama içindeki DB klasörü)."""
+    from renforge_config import DB_DIR
+    return DB_DIR / "run_history.json"
 
 
 def get_project_history_path(project_path: str) -> Optional[Path]:

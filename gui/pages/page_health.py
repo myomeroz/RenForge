@@ -1562,7 +1562,7 @@ class HealthPage(QWidget):
         self.navigate_to_row_requested.emit(row_id, mode, True)
     
     def _on_insight_action(self, action_id: str, payload: dict):
-        """Handle insight action button click (Stage 13/14)."""
+        """Handle insight action button click (Stage 13/14/16.3)."""
         logger.info(f"Insight action: {action_id} with payload {payload}")
         
         if action_id == "RERUN_SAME":
@@ -1580,6 +1580,20 @@ class HealthPage(QWidget):
         elif action_id == "SWITCH_PROVIDER":
             new_provider = payload.get("provider", "google")
             self._handle_action_switch_provider(new_provider)
+        # Stage 16.3: TM/Glossary aksiyonları
+        elif action_id == "GOTO_GLOSSARY_MISS":
+            self._handle_action_goto_filter("glossary_miss")
+        elif action_id == "GOTO_GLOSSARY_VIOLATION":
+            self._handle_action_goto_filter("glossary_violation")
+        elif action_id == "GOTO_TM_ROWS":
+            self._handle_action_goto_filter("tm_source")
+        elif action_id == "TOGGLE_TM_AUTO_APPLY":
+            self._handle_action_toggle_tm_auto_apply(payload.get("enable", True))
+        # Stage 17: TM/Glossary sayfasına jump
+        elif action_id == "OPEN_IN_TM":
+            self._handle_action_open_in_tm(payload.get("search_text", ""))
+        elif action_id == "OPEN_IN_GLOSSARY":
+            self._handle_action_open_in_glossary(payload.get("term", ""))
         else:
             logger.warning(f"Unknown action: {action_id}")
     
@@ -1867,6 +1881,162 @@ class HealthPage(QWidget):
             InfoBar.error(
                 title="Hata",
                 content=f"Auto-retry hatası: {e}",
+                parent=self,
+                duration=3000
+            )
+    
+    # =========================================================================
+    # TM / GLOSSARY HANDLERS (Stage 16.3)
+    # =========================================================================
+    
+    def _handle_action_goto_filter(self, filter_type: str):
+        """
+        Belirli filtre tipine göre Translate sayfasına git.
+        
+        Args:
+            filter_type: "glossary_miss", "glossary_violation", "tm_source"
+        """
+        logger.info(f"[HEALTH] Goto filter: {filter_type}")
+        
+        # Translate sayfasına git ve filtreyi uygula
+        # Bu sinyal main window tarafından handle edilmeli
+        filter_map = {
+            "glossary_miss": "qc_glossary_miss",
+            "glossary_violation": "qc_glossary_violation",
+            "tm_source": "tm_source"
+        }
+        
+        filter_code = filter_map.get(filter_type, filter_type)
+        
+        InfoBar.info(
+            title="Filtreleniyor",
+            content=f"Filtre: {filter_type}",
+            parent=self,
+            duration=2000
+        )
+        
+        # Signal emit et (eğer tanımlıysa)
+        if hasattr(self, 'filter_by_qc_code'):
+            self.filter_by_qc_code.emit(filter_code)
+    
+    def _handle_action_toggle_tm_auto_apply(self, enable: bool):
+        """TM auto-apply ayarını değiştir."""
+        try:
+            from models.settings_model import SettingsModel
+            settings = SettingsModel.instance()
+            settings.tm_auto_apply_exact = enable
+            
+            status = "açık" if enable else "kapalı"
+            InfoBar.success(
+                title="Ayar Güncellendi",
+                content=f"TM Auto-Apply: {status}",
+                parent=self,
+                duration=2000
+            )
+            
+        except Exception as e:
+            logger.error(f"TM auto-apply toggle failed: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"Ayar güncellenemedi: {e}",
+                parent=self,
+                duration=3000
+            )
+    
+    # =========================================================================
+    # STAGE 17: TM / GLOSSARY JUMP HANDLERS
+    # =========================================================================
+    
+    def _handle_action_open_in_tm(self, search_text: str):
+        """
+        TM sayfasını aç ve arama yap.
+        
+        Args:
+            search_text: Aranacak metin (source_text veya phrase)
+        """
+        logger.info(f"[HEALTH] Open in TM: '{search_text}'")
+        
+        try:
+            # Ana pencereye sinyal gönder (FluentWindow navigation)
+            main_window = self.window()
+            if hasattr(main_window, 'switchTo'):
+                main_window.switchTo(main_window.tm_interface if hasattr(main_window, 'tm_interface') else None)
+            
+            # TM sayfasına erişim
+            tm_page = None
+            if hasattr(main_window, 'tm_page'):
+                tm_page = main_window.tm_page
+            elif hasattr(main_window, 'tm_interface') and hasattr(main_window.tm_interface, 'search_and_select'):
+                tm_page = main_window.tm_interface
+            
+            if tm_page and hasattr(tm_page, 'search_and_select'):
+                tm_page.search_and_select(search_text)
+                InfoBar.info(
+                    title="TM",
+                    content=f"'{search_text[:30]}...' aranıyor",
+                    parent=self,
+                    duration=2000
+                )
+            else:
+                InfoBar.warning(
+                    title="TM Sayfası",
+                    content="TM sayfasına erişilemiyor",
+                    parent=self,
+                    duration=2000
+                )
+                
+        except Exception as e:
+            logger.error(f"Open in TM failed: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"TM açılamadı: {e}",
+                parent=self,
+                duration=3000
+            )
+    
+    def _handle_action_open_in_glossary(self, term: str):
+        """
+        Glossary sayfasını aç ve arama yap.
+        
+        Args:
+            term: Aranacak terim
+        """
+        logger.info(f"[HEALTH] Open in Glossary: '{term}'")
+        
+        try:
+            # Ana pencereye sinyal gönder (FluentWindow navigation)
+            main_window = self.window()
+            if hasattr(main_window, 'switchTo'):
+                main_window.switchTo(main_window.glossary_interface if hasattr(main_window, 'glossary_interface') else None)
+            
+            # Glossary sayfasına erişim
+            glossary_page = None
+            if hasattr(main_window, 'glossary_page'):
+                glossary_page = main_window.glossary_page
+            elif hasattr(main_window, 'glossary_interface') and hasattr(main_window.glossary_interface, 'search_and_select'):
+                glossary_page = main_window.glossary_interface
+            
+            if glossary_page and hasattr(glossary_page, 'search_and_select'):
+                glossary_page.search_and_select(term)
+                InfoBar.info(
+                    title="Glossary",
+                    content=f"'{term[:30]}' aranıyor",
+                    parent=self,
+                    duration=2000
+                )
+            else:
+                InfoBar.warning(
+                    title="Glossary Sayfası",
+                    content="Glossary sayfasına erişilemiyor",
+                    parent=self,
+                    duration=2000
+                )
+                
+        except Exception as e:
+            logger.error(f"Open in Glossary failed: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"Glossary açılamadı: {e}",
                 parent=self,
                 duration=3000
             )

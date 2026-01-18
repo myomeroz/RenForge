@@ -311,7 +311,7 @@ def build_json_from_run(run_record) -> dict:
         data['insights'] = {
             'severity': insight.severity,
             'summary_lines': insight.summary_lines,
-            'tags': insight.tags,
+            'tags': list(insight.tags),  # Set'i list'e çevir (JSON serializable)
             'has_error_regression': insight.has_error_regression,
             'has_duration_regression': insight.has_duration_regression
         }

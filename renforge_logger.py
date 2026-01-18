@@ -3,7 +3,7 @@
 RenForge Merkezi Logging Modülü
 
 Tüm uygulama için standart logging yapılandırması sağlar.
-Log dosyaları ~/.renforge/logs/ dizininde saklanır.
+Log dosyaları uygulama ana klasöründeki logs/ dizininde saklanır.
 
 FIX: Handlers are only configured on the root 'renforge' logger.
 Child loggers propagate to root and do not add handlers themselves.
@@ -11,11 +11,18 @@ Child loggers propagate to root and do not add handlers themselves.
 
 import logging
 import os
+import sys
 from pathlib import Path
 from datetime import datetime
 
-# Log dizini
-LOG_DIR = Path.home() / ".renforge" / "logs"
+# Uygulama ana klasörü
+if getattr(sys, 'frozen', False):
+    _APP_DIR = Path(os.path.dirname(sys.executable))
+else:
+    _APP_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
+
+# Log dizini (uygulama ana klasöründe)
+LOG_DIR = _APP_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Log dosyası adı (tarih ile)

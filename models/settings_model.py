@@ -63,6 +63,14 @@ class SettingsModel:
     # Retry Policy (Stage 14)
     KEY_RETRY_PROFILE = "retry_profile"  # str - "Kapalı" / "Yumuşak" / "Agresif"
     KEY_BATCH_CHUNK_SIZE = "batch_chunk_size"  # int - default chunk size for batch
+    
+    # Translation Memory (Stage 16.1)
+    KEY_TM_ENABLED = "tm_enabled"  # bool - enable TM lookup
+    KEY_TM_AUTO_APPLY_EXACT = "tm_auto_apply_exact"  # bool - auto-apply exact matches
+    
+    # Glossary (Stage 16.2)
+    KEY_GLOSSARY_ENABLED = "glossary_enabled"  # bool - enable glossary checks
+    KEY_GLOSSARY_MODE = "glossary_mode"  # "qc_only" | "enforce"
     def __new__(cls) -> 'SettingsModel':
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -127,6 +135,12 @@ class SettingsModel:
             # Retry Policy (Stage 14)
             self.KEY_RETRY_PROFILE: "Yumuşak",
             self.KEY_BATCH_CHUNK_SIZE: 20,
+            # Translation Memory (Stage 16.1)
+            self.KEY_TM_ENABLED: True,
+            self.KEY_TM_AUTO_APPLY_EXACT: True,
+            # Glossary (Stage 16.2)
+            self.KEY_GLOSSARY_ENABLED: True,
+            self.KEY_GLOSSARY_MODE: "qc_only",
         }
     
     def _load(self):
@@ -498,6 +512,52 @@ class SettingsModel:
     @batch_chunk_size.setter
     def batch_chunk_size(self, value: int):
         self.set(self.KEY_BATCH_CHUNK_SIZE, max(1, min(100, value)))
+    
+    # =========================================================================
+    # TRANSLATION MEMORY (Stage 16.1)
+    # =========================================================================
+    
+    @property
+    def tm_enabled(self) -> bool:
+        """Is Translation Memory lookup enabled?"""
+        return self._settings.get(self.KEY_TM_ENABLED, True)
+    
+    @tm_enabled.setter
+    def tm_enabled(self, value: bool):
+        self.set(self.KEY_TM_ENABLED, value)
+    
+    @property
+    def tm_auto_apply_exact(self) -> bool:
+        """Auto-apply exact TM matches during batch translation?"""
+        return self._settings.get(self.KEY_TM_AUTO_APPLY_EXACT, True)
+    
+    @tm_auto_apply_exact.setter
+    def tm_auto_apply_exact(self, value: bool):
+        self.set(self.KEY_TM_AUTO_APPLY_EXACT, value)
+    
+    # =========================================================================
+    # GLOSSARY (Stage 16.2)
+    # =========================================================================
+    
+    @property
+    def glossary_enabled(self) -> bool:
+        """Is glossary checking enabled?"""
+        return self._settings.get(self.KEY_GLOSSARY_ENABLED, True)
+    
+    @glossary_enabled.setter
+    def glossary_enabled(self, value: bool):
+        self.set(self.KEY_GLOSSARY_ENABLED, value)
+    
+    @property
+    def glossary_mode(self) -> str:
+        """Glossary mode: 'qc_only' or 'enforce'."""
+        return self._settings.get(self.KEY_GLOSSARY_MODE, "qc_only")
+    
+    @glossary_mode.setter
+    def glossary_mode(self, value: str):
+        if value not in ("qc_only", "enforce"):
+            value = "qc_only"
+        self.set(self.KEY_GLOSSARY_MODE, value)
     
     def __repr__(self) -> str:
         return f"SettingsModel(dirty={self._dirty})"

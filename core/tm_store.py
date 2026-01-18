@@ -1,248 +1,325 @@
+# -*- coding: utf-8 -*-
+"""
+RenForge Translation Memory Store (Stage 16.1)
 
-import sqlite3
-import os
+Hash-based exact-match Translation Memory with SQLite persistence.
+Thread-safe for worker usage.
+"""
+
+import hashlib
 import re
-import html
+import sqlite3
+import threading
 from dataclasses import dataclass
-from typing import List, Optional
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+
 from renforge_logger import get_logger
 
 logger = get_logger("core.tm_store")
 
+
+# =============================================================================
+# TEXT NORMALIZATION
+# =============================================================================
+
+def normalize_text(text: str) -> str:
+    """
+    Normalize text for TM matching.
+    
+    - Strip leading/trailing whitespace
+    - Collapse multiple spaces to single space
+    - Lowercase for case-insensitive matching
+    - Preserve Ren'Py placeholders like [name], {i}, etc.
+    """
+    if not text:
+        return ""
+    
+    # Strip and collapse whitespace
+    text = text.strip()
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Lowercase for matching (but original case is stored separately)
+    text = text.lower()
+    
+    return text
+
+
+def compute_hash(source_text: str, source_lang: str, target_lang: str) -> str:
+    """
+    Compute hash for exact-match lookup.
+    
+    Combines normalized source text with language pair for unique key.
+    """
+    normalized = normalize_text(source_text)
+    combined = f"{source_lang}:{target_lang}:{normalized}"
+    return hashlib.sha256(combined.encode('utf-8')).hexdigest()[:32]
+
+
+# =============================================================================
+# DATA CLASS
+# =============================================================================
+
 @dataclass
 class TMEntry:
+    """A Translation Memory entry."""
+    id: int
+    source_hash: str
     source_text: str
     target_text: str
-    score: float = 0.0
-    provenance: str = "manual"
-    reviewed: bool = False
-    
-    @property
-    def is_high_confidence(self):
-        return self.reviewed or self.provenance == "review_accepted"
+    source_lang: str
+    target_lang: str
+    created_at: str
+    updated_at: str
+    use_count: int = 0
+    origin: str = ""  # e.g., "gemini", "google", "manual"
 
-class TMManager:
+
+# =============================================================================
+# TM STORE
+# =============================================================================
+
+class TMStore:
     """
-    Manages Translation Memory using SQLite for persistence
-    and an in-memory normalized index for fast retrieval.
+    Translation Memory store with SQLite backend.
+    
+    Thread-safe singleton with connection-per-thread.
     """
-    def __init__(self, project_path: Optional[str] = None):
-        self.db_path = None
-        self.conn = None
-        self.project_path = project_path
-        self._memory_cache = {} # source -> [TMEntry]
+    
+    _instance: Optional['TMStore'] = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
+    
+    def __init__(self):
+        if hasattr(self, '_initialized') and self._initialized:
+            return
         
-        # Always init DB since it's global now
-        self.init_db(project_path)
-            
-    def init_db(self, project_path: Optional[str] = None):
-        if project_path:
-            self.project_path = project_path
+        self._db_path = self._get_db_path()
+        self._local = threading.local()
         
-        # User requested TM in "DB" folder alongside settings.json
-        # This makes the TM global for the application instance.
-        import renforge_config
-        # Ensure we work with string path for sqlite compatibility
-        self.db_path = str(renforge_config.DB_DIR / "tm.db") if hasattr(renforge_config.DB_DIR, 'joinpath') else os.path.join(renforge_config.DB_DIR, "tm.db")
+        # Initialize schema on main thread
+        self._ensure_schema()
         
-        try:
-            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._create_tables()
-            self._load_cache() # Warm up cache for speed
-        except Exception as e:
-            logger.error(f"Failed to init TM DB: {e}")
-            self.conn = None
-            
-    def _create_tables(self):
-        c = self.conn.cursor()
-        c.execute("""
+        self._initialized = True
+        logger.info(f"[TM] TMStore initialized: {self._db_path}")
+    
+    @classmethod
+    def instance(cls) -> 'TMStore':
+        """Get singleton instance."""
+        if cls._instance is None:
+            cls._instance = TMStore()
+        return cls._instance
+    
+    @classmethod
+    def reset_instance(cls):
+        """Reset singleton (for testing)."""
+        cls._instance = None
+    
+    def _get_db_path(self) -> Path:
+        """TM veritabanı yolunu döndür (uygulama içindeki DB klasörü)."""
+        from renforge_config import DB_DIR
+        return DB_DIR / "translation_memory.db"
+    
+    def _get_connection(self) -> sqlite3.Connection:
+        """Get thread-local database connection."""
+        if not hasattr(self._local, 'connection') or self._local.connection is None:
+            self._local.connection = sqlite3.connect(
+                str(self._db_path),
+                check_same_thread=False
+            )
+            self._local.connection.row_factory = sqlite3.Row
+        return self._local.connection
+    
+    def _ensure_schema(self):
+        """Create TM table if not exists."""
+        conn = self._get_connection()
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS tm_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_hash TEXT NOT NULL UNIQUE,
                 source_text TEXT NOT NULL,
                 target_text TEXT NOT NULL,
-                normalized_hash TEXT,
-                provenance TEXT,
-                reviewed INTEGER DEFAULT 0,
-                timestamp REAL,
-                UNIQUE(source_text, target_text)
+                source_lang TEXT NOT NULL,
+                target_lang TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                use_count INTEGER DEFAULT 0,
+                origin TEXT DEFAULT ''
             )
         """)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_source ON tm_entries(source_text)")
-        self.conn.commit()
         
-    def _normalize(self, text: str) -> str:
-        # Lowercase, strip punctuation and whitespace
-        return re.sub(r'[\W_]+', '', text.lower())
-
-    def _load_cache(self):
-        """Loads entries into memory map for fast normalization lookup."""
-        if not self.conn: return
-        c = self.conn.cursor()
-        c.execute("SELECT source_text, target_text, provenance, reviewed FROM tm_entries")
-        rows = c.fetchall()
+        # Index for fast hash lookup
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_source_hash ON tm_entries(source_hash)
+        """)
         
-        self._memory_cache = {}
-        count = 0
-        for r in rows:
-            src, tgt, prov, rev = r
-            entry = TMEntry(src, tgt, 100.0, prov, bool(rev))
-            
-            # Exact key
-            if src not in self._memory_cache: self._memory_cache[src] = []
-            self._memory_cache[src].append(entry)
-            
-            # Normalized key (store as separate map later if needed, but for now exact first)
-            count += 1
-        logger.debug(f"TM Cache loaded {count} entries.")
-
-    def add_entry(self, source: str, target: str, provenance: str = "manual", reviewed: bool = False):
-        if not source or not target or not self.conn: return
-        if source == target: return # Don't store identicals? Or maybe yes if deliberate.
-        
-        import time
-        ts = time.time()
-        c = self.conn.cursor()
-        try:
-            c.execute("""
-                INSERT OR REPLACE INTO tm_entries (source_text, target_text, normalized_hash, provenance, reviewed, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (source, target, self._normalize(source), provenance, 1 if reviewed else 0, ts))
-            self.conn.commit()
-            
-            # Update cache
-            entry = TMEntry(source, target, 100.0, provenance, reviewed)
-            if source not in self._memory_cache: self._memory_cache[source] = []
-            # Check duplicates
-            exists = False
-            for e in self._memory_cache[source]:
-                if e.target_text == target:
-                    e.provenance = provenance
-                    e.reviewed = reviewed
-                    exists = True
-                    break
-            if not exists:
-                self._memory_cache[source].append(entry)
-                
-        except Exception as e:
-            logger.error(f"Error adding TM entry: {e}")
-
-    def import_from_db(self, source_db_path: str) -> int:
+        conn.commit()
+        logger.debug("[TM] Schema ensured")
+    
+    # =========================================================================
+    # LOOKUP
+    # =========================================================================
+    
+    def lookup(
+        self,
+        source_text: str,
+        source_lang: str,
+        target_lang: str
+    ) -> Optional[TMEntry]:
         """
-        Import entries from another TM database.
-        Merges new entries, ignores duplicates.
-        Returns count of added entries.
+        Look up exact match in TM.
+        
+        Args:
+            source_text: Original text to translate
+            source_lang: Source language code
+            target_lang: Target language code
+        
+        Returns:
+            TMEntry if exact match found, None otherwise
         """
-        if not self.conn or not os.path.exists(source_db_path):
-            return 0
-            
-        added_count = 0
-        try:
-            # Attach source DB
-            c = self.conn.cursor()
-            # Use specific syntax for attaching
-            c.execute(f"ATTACH DATABASE ? AS src_db", (source_db_path,))
-            
-            # Insert or Ignore
-            c.execute("""
-                INSERT OR IGNORE INTO tm_entries (source_text, target_text, normalized_hash, provenance, reviewed, timestamp)
-                SELECT source_text, target_text, normalized_hash, provenance, reviewed, timestamp
-                FROM src_db.tm_entries
-            """)
-            added_count = c.rowcount
-            
-            self.conn.commit()
-            
-            # Detach
-            c.execute("DETACH DATABASE src_db")
-            
-            # Refresh cache if items added
-            if added_count > 0:
-                self._load_cache()
-                logger.info(f"Imported {added_count} entries from {source_db_path}")
-                
-        except Exception as e:
-            logger.error(f"Failed to import TM DB: {e}")
-            if self.conn:
-                self.conn.rollback()
-                
-        return added_count
+        if not source_text or not source_text.strip():
+            return None
         
-    def lookup(self, text: str, limit: int = 5) -> List[TMEntry]:
-        if not text: return []
-        results = []
+        source_hash = compute_hash(source_text, source_lang, target_lang)
         
-        # 1. Exact Match
-        if text in self._memory_cache:
-            for e in self._memory_cache[text]:
-                e.score = 100.0
-                results.append(e)
-                
-        # 2. Normalized Match (if requested or strict failed)
-        # Scan cache? O(N). Expensive if 100k.
-        # But iterating 100k strings in Python is ~50ms. Acceptable.
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM tm_entries WHERE source_hash = ?",
+            (source_hash,)
+        )
+        row = cursor.fetchone()
         
-        norm_input = self._normalize(text)
-        if not norm_input: return results
+        if row:
+            logger.debug(f"[TM] Hit: {source_hash[:8]}...")
+            return TMEntry(
+                id=row['id'],
+                source_hash=row['source_hash'],
+                source_text=row['source_text'],
+                target_text=row['target_text'],
+                source_lang=row['source_lang'],
+                target_lang=row['target_lang'],
+                created_at=row['created_at'],
+                updated_at=row['updated_at'],
+                use_count=row['use_count'],
+                origin=row['origin'] or ""
+            )
         
-        # Simple fuzzy: normalized equality
-        # Since we use cache dict keys, we can iterate keys.
+        return None
+    
+    def lookup_batch(
+        self,
+        source_texts: List[str],
+        source_lang: str,
+        target_lang: str
+    ) -> Dict[int, TMEntry]:
+        """
+        Batch lookup for multiple source texts.
         
-        # Optimization: Only fuzzy if exact not found? Or always to find variants?
-        # User wants "suggestions". Even if exact mismatch, maybe useful.
+        Returns:
+            Dict mapping index -> TMEntry for found matches
+        """
+        results = {}
         
-        # To avoid lag, we only run scan if limit not reached
-        if len(results) >= limit: return results[:limit]
+        for i, text in enumerate(source_texts):
+            entry = self.lookup(text, source_lang, target_lang)
+            if entry:
+                results[i] = entry
         
-        # Heuristic: Only scan if text len > some threshold
-        candidates = []
-        
-        for src_key in self._memory_cache.keys():
-            if src_key == text: continue # Already handled
-            
-            # Check normalized
-            norm_key = self._normalize(src_key)
-            if not norm_key: continue
-            
-            score = 0
-            if norm_key == norm_input:
-                score = 90.0
-            elif norm_input in norm_key or norm_key in norm_input:
-                # Substring match
-                score = 70.0
-            
-            if score > 0:
-                for e in self._memory_cache[src_key]:
-                    # Clone entry with new score
-                    cand = TMEntry(e.source_text, e.target_text, score, e.provenance, e.reviewed)
-                    candidates.append(cand)
-                    
-        # Sort by score desc, then reviewed desc
-        candidates.sort(key=lambda x: (x.score, x.reviewed), reverse=True)
-        
-        # Merge
-        seen_targets = set(r.target_text for r in results)
-        for c in candidates:
-            if c.target_text not in seen_targets:
-                results.append(c)
-                seen_targets.add(c.target_text)
-                if len(results) >= limit: break
-                
         return results
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-
-# Global instance
-_instance = None
-def get_tm_manager() -> TMManager:
-    global _instance
-    if _instance is None:
-        _instance = TMManager()
-    return _instance
-
-def init_tm_manager(project_path: str):
-    global _instance
-    _instance = TMManager(project_path)
-    return _instance
+    
+    # =========================================================================
+    # INSERT / UPDATE
+    # =========================================================================
+    
+    def insert(
+        self,
+        source_text: str,
+        target_text: str,
+        source_lang: str,
+        target_lang: str,
+        origin: str = ""
+    ) -> bool:
+        """
+        Insert or update a TM entry.
+        
+        Args:
+            source_text: Original text
+            target_text: Translated text
+            source_lang: Source language code
+            target_lang: Target language code
+            origin: Origin of translation (e.g., "gemini", "google")
+        
+        Returns:
+            True if successful
+        """
+        if not source_text or not target_text:
+            return False
+        
+        source_hash = compute_hash(source_text, source_lang, target_lang)
+        now = datetime.now().isoformat()
+        
+        conn = self._get_connection()
+        
+        try:
+            # Try insert, update on conflict
+            conn.execute("""
+                INSERT INTO tm_entries 
+                    (source_hash, source_text, target_text, source_lang, target_lang, 
+                     created_at, updated_at, use_count, origin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+                ON CONFLICT(source_hash) DO UPDATE SET
+                    target_text = excluded.target_text,
+                    updated_at = excluded.updated_at,
+                    use_count = use_count + 1,
+                    origin = excluded.origin
+            """, (source_hash, source_text.strip(), target_text.strip(), 
+                  source_lang, target_lang, now, now, origin))
+            
+            conn.commit()
+            logger.debug(f"[TM] Inserted/updated: {source_hash[:8]}...")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[TM] Insert failed: {e}")
+            return False
+    
+    def increment_use_count(self, source_hash: str):
+        """Increment use count for a TM entry."""
+        conn = self._get_connection()
+        conn.execute(
+            "UPDATE tm_entries SET use_count = use_count + 1 WHERE source_hash = ?",
+            (source_hash,)
+        )
+        conn.commit()
+    
+    # =========================================================================
+    # STATS
+    # =========================================================================
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get TM statistics."""
+        conn = self._get_connection()
+        
+        cursor = conn.execute("SELECT COUNT(*) as total FROM tm_entries")
+        total = cursor.fetchone()['total']
+        
+        cursor = conn.execute("SELECT SUM(use_count) as uses FROM tm_entries")
+        uses = cursor.fetchone()['uses'] or 0
+        
+        return {
+            'total_entries': total,
+            'total_uses': uses
+        }
+    
+    def clear(self):
+        """Clear all TM entries (for testing)."""
+        conn = self._get_connection()
+        conn.execute("DELETE FROM tm_entries")
+        conn.commit()
+        logger.info("[TM] Database cleared")
