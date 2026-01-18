@@ -20,6 +20,7 @@ from qfluentwidgets import (
 from renforge_logger import get_logger
 from core.run_history_store import RunHistoryStore, RunRecord
 from core.run_analytics import compute_run_deltas, compute_trends
+from core.auto_insights import generate_insights, InsightResult, ActionSuggestion
 
 logger = get_logger("gui.pages.health")
 
@@ -771,6 +772,124 @@ class TrendCard(CardWidget):
         else:
             self.problem_label.setText("Sorunlu model tespit edilmedi.")
 
+
+class InsightActionCard(CardWidget):
+    """Card showing auto-insights and action buttons (Stage 13)."""
+    
+    # Signals for actions
+    action_requested = Signal(str, dict)  # (action_id, payload)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(12)
+        
+        # Header with severity icon
+        header_layout = QHBoxLayout()
+        self.severity_icon = BodyLabel("💡")
+        self.severity_icon.setStyleSheet("font-size: 18px;")
+        header_layout.addWidget(self.severity_icon)
+        
+        header_layout.addWidget(StrongBodyLabel("Özet & Aksiyonlar"))
+        header_layout.addStretch()
+        
+        # Regression badge (hidden by default)
+        self.regression_badge = BodyLabel("⚠️ Regresyon")
+        self.regression_badge.setStyleSheet("""
+            background: #cf222e; color: white; padding: 2px 8px; 
+            border-radius: 4px; font-size: 11px;
+        """)
+        self.regression_badge.setVisible(False)
+        header_layout.addWidget(self.regression_badge)
+        
+        layout.addLayout(header_layout)
+        
+        # Main content: left=insights, right=actions
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(16)
+        
+        # Left: Insights text
+        self.insights_layout = QVBoxLayout()
+        self.insights_layout.setSpacing(4)
+        content_layout.addLayout(self.insights_layout, 2)  # Flex 2
+        
+        # Right: Action buttons
+        self.actions_layout = QVBoxLayout()
+        self.actions_layout.setSpacing(8)
+        content_layout.addLayout(self.actions_layout, 1)  # Flex 1
+        
+        layout.addLayout(content_layout)
+        
+        self._current_insight = None
+    
+    def set_insight(self, insight: InsightResult):
+        """Update card with insight data."""
+        self._current_insight = insight
+        
+        # Update severity icon
+        if insight.severity == "bad":
+            self.severity_icon.setText("🔴")
+        elif insight.severity == "warn":
+            self.severity_icon.setText("🟡")
+        else:
+            self.severity_icon.setText("🟢")
+        
+        # Show regression badge
+        has_regression = insight.has_error_regression or insight.has_duration_regression
+        self.regression_badge.setVisible(has_regression)
+        
+        # Clear and populate insights
+        while self.insights_layout.count():
+            item = self.insights_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        for line in insight.summary_lines:
+            lbl = BodyLabel(line)
+            lbl.setWordWrap(True)
+            self.insights_layout.addWidget(lbl)
+        
+        if not insight.summary_lines:
+            lbl = BodyLabel("Detaylı içgörü için yeterli veri yok.")
+            lbl.setStyleSheet("color: #888; font-style: italic;")
+            self.insights_layout.addWidget(lbl)
+        
+        self.insights_layout.addStretch()
+        
+        # Clear and populate actions
+        while self.actions_layout.count():
+            item = self.actions_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        for action in insight.suggested_actions[:4]:  # Max 4 buttons
+            btn = PushButton(action.label_tr)
+            btn.setToolTip(action.reason_tr)
+            btn.clicked.connect(
+                lambda checked, a=action: self.action_requested.emit(a.id, a.payload)
+            )
+            self.actions_layout.addWidget(btn)
+        
+        self.actions_layout.addStretch()
+    
+    def clear(self):
+        """Clear the card."""
+        self._current_insight = None
+        self.severity_icon.setText("💡")
+        self.regression_badge.setVisible(False)
+        
+        while self.insights_layout.count():
+            item = self.insights_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        while self.actions_layout.count():
+            item = self.actions_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
 class HealthPage(QWidget):
     """
     Health dashboard page showing project stats and run history.
@@ -910,6 +1029,11 @@ class HealthPage(QWidget):
         
         self.trend_card = TrendCard()
         middle_layout.addWidget(self.trend_card)
+        
+        # Insight + Action Card (Stage 13)
+        self.insight_card = InsightActionCard()
+        self.insight_card.action_requested.connect(self._on_insight_action)
+        middle_layout.addWidget(self.insight_card)
         
         middle_layout.addStretch() # Ensure cards are top-aligned if meaningful
         
@@ -1059,6 +1183,29 @@ class HealthPage(QWidget):
         
         # Update run details (Stage 9)
         self.run_details.set_run(self._selected_run, self._format_duration_ms)
+        
+        # Generate insights (Stage 13)
+        if self._selected_run:
+            # Determine baseline (previous run)
+            baseline_run = None
+            if self._selected_run_index > 0 and len(runs) > self._selected_run_index:
+                # runs is ordered oldest first, newest last
+                # selected_run_index 0 = newest, so baseline would be runs[-2] etc.
+                # Actually let's find by timestamp
+                current_ts = self._selected_run.timestamp
+                for i, r in enumerate(runs):
+                    if r.timestamp == current_ts and i > 0:
+                        baseline_run = runs[i - 1]
+                        break
+            
+            insight = generate_insights(
+                selected_run=self._selected_run,
+                baseline_run=baseline_run,
+                recent_runs=runs
+            )
+            self.insight_card.set_insight(insight)
+        else:
+            self.insight_card.clear()
 
         logger.debug(f"Health page refreshed: {len(runs)} runs")
     
@@ -1249,3 +1396,105 @@ class HealthPage(QWidget):
     def _on_detail_item_clicked(self, row_id: int, mode: str):
         """Handle click on error/QC item in Run Details."""
         self.navigate_to_row_requested.emit(row_id, mode, True)
+    
+    def _on_insight_action(self, action_id: str, payload: dict):
+        """Handle insight action button click (Stage 13)."""
+        logger.info(f"Insight action: {action_id} with payload {payload}")
+        
+        if action_id == "RETRY_FAILED":
+            self._handle_action_retry_failed()
+        elif action_id == "SET_CHUNK_10":
+            self._handle_action_set_chunk(10)
+        elif action_id == "OPEN_ERRORS_FILTER":
+            self._handle_action_open_errors()
+        elif action_id == "COPY_DEBUG_BUNDLE":
+            self._on_copy_debug_bundle()  # Reuse existing handler
+        elif action_id == "SWITCH_PROVIDER":
+            new_provider = payload.get("provider", "google")
+            self._handle_action_switch_provider(new_provider)
+        else:
+            logger.warning(f"Unknown action: {action_id}")
+    
+    def _handle_action_retry_failed(self):
+        """Retry failed rows from selected run."""
+        if not self._selected_run:
+            return
+        
+        # Check if we have failed indices
+        if not self._selected_run.error_row_ids:
+            InfoBar.warning(
+                title="Uyarı",
+                content="Yeniden denenecek hatalı satır bulunamadı",
+                parent=self,
+                duration=3000
+            )
+            return
+        
+        # Emit signal or call controller
+        # For now, show info and let user use existing retry mechanism
+        count = len(self._selected_run.error_row_ids)
+        InfoBar.info(
+            title="Bilgi",
+            content=f"{count} hatalı satır var. Çeviri sayfasından 'Başarısızları Yeniden Dene' kullanın.",
+            parent=self,
+            duration=4000
+        )
+    
+    def _handle_action_set_chunk(self, chunk_size: int):
+        """Update chunk size setting."""
+        try:
+            from models.settings_model import SettingsModel
+            settings = SettingsModel.instance()
+            settings.set("batch_chunk_size", chunk_size)
+            settings.save()
+            
+            InfoBar.success(
+                title="Ayar Güncellendi",
+                content=f"Chunk boyutu: {chunk_size}",
+                parent=self,
+                duration=2000
+            )
+        except Exception as e:
+            logger.error(f"Failed to update chunk size: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"Ayar güncellenemedi: {e}",
+                parent=self,
+                duration=3000
+            )
+    
+    def _handle_action_open_errors(self):
+        """Open errors filter and navigate to first error."""
+        if not self._selected_run:
+            return
+        
+        if self._selected_run.error_row_ids:
+            first_error_row = min(self._selected_run.error_row_ids)
+            # Emit with filter enabled
+            self.navigate_to_row_requested.emit(first_error_row, "error", True)
+        else:
+            # Just navigate to translate page with errors filter
+            self.navigate_to_first_error.emit()
+    
+    def _handle_action_switch_provider(self, provider: str):
+        """Switch to a different provider."""
+        try:
+            from models.settings_model import SettingsModel
+            settings = SettingsModel.instance()
+            settings.set("provider", provider)
+            settings.save()
+            
+            InfoBar.success(
+                title="Provider Değiştirildi",
+                content=f"Yeni provider: {provider}",
+                parent=self,
+                duration=2000
+            )
+        except Exception as e:
+            logger.error(f"Failed to switch provider: {e}")
+            InfoBar.error(
+                title="Hata",
+                content=f"Provider değiştirilemedi: {e}",
+                parent=self,
+                duration=3000
+            )

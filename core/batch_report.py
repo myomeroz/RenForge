@@ -65,7 +65,9 @@ class BatchReport:
     
     # Optional log snippet (masked)
     log_snippet: Optional[str] = None
-
+    
+    # Insights (Stage 13)
+    insights: Optional[Dict[str, Any]] = None  # {severity, summary_lines, tags}
 
 # =============================================================================
 # SENSITIVE DATA MASKING
@@ -168,6 +170,30 @@ def build_markdown_from_run(run_record) -> str:
         duration_str = f"{duration_ms // 1000}s"
     lines.append(f"| Duration | {duration_str} |")
     lines.append("")
+    
+    # Insights (Stage 13) - generate if not available
+    try:
+        from core.auto_insights import generate_insights
+        insight = generate_insights(run_record, None, [run_record])
+        
+        if insight.summary_lines:
+            lines.append("## Insights")
+            lines.append("")
+            
+            severity_emoji = {"ok": "🟢", "warn": "🟡", "bad": "🔴"}.get(insight.severity, "💡")
+            lines.append(f"**Severity:** {severity_emoji} {insight.severity.upper()}")
+            lines.append("")
+            
+            for line in insight.summary_lines:
+                lines.append(f"- {line}")
+            
+            if insight.tags:
+                lines.append("")
+                lines.append(f"**Tags:** {', '.join(insight.tags)}")
+            
+            lines.append("")
+    except Exception as e:
+        logger.debug(f"Could not generate insights for report: {e}")
     
     # Context
     lines.append("## Context")
@@ -274,8 +300,23 @@ def build_json_from_run(run_record) -> dict:
         'qc_issues': [],
         'error_category_counts': run_record.error_category_counts,
         'qc_code_counts': run_record.qc_code_counts,
-        'generator': 'RenForge'
+        'generator': 'RenForge',
+        'insights': None
     }
+    
+    # Generate insights
+    try:
+        from core.auto_insights import generate_insights
+        insight = generate_insights(run_record, None, [run_record])
+        data['insights'] = {
+            'severity': insight.severity,
+            'summary_lines': insight.summary_lines,
+            'tags': insight.tags,
+            'has_error_regression': insight.has_error_regression,
+            'has_duration_regression': insight.has_duration_regression
+        }
+    except Exception as e:
+        logger.debug(f"Could not generate insights for JSON: {e}")
     
     # Add error details if available
     if run_record.error_items:
