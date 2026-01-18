@@ -6,13 +6,15 @@ GlossaryStore'dan veri okuyarak sözlük terimlerini listeler.
 Terim ekleme/silme ve CSV içe/dışa aktarma destekler.
 Stage 17: Enabled checkbox, detaylı import özeti, Health jump API.
 Stage 18: Enforce Önizleme dialog.
+Stage 19: Import conflict strategy seçimi.
 """
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QHeaderView, 
     QTableWidgetItem, QFileDialog, QDialog, QFormLayout,
-    QDialogButtonBox, QCheckBox, QLabel, QTextEdit, QApplication
+    QDialogButtonBox, QCheckBox, QLabel, QTextEdit, QApplication,
+    QButtonGroup, QRadioButton
 )
 from PySide6.QtGui import QColor, QFont
 
@@ -656,7 +658,7 @@ class GlossaryPage(QWidget):
             )
     
     def _on_import_csv(self):
-        """CSV dosyasından içe aktar."""
+        """CSV dosyasından içe aktar (Stage 19: Strategy seçimi ile)."""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "CSV Dosyası Seç",
@@ -667,13 +669,21 @@ class GlossaryPage(QWidget):
         if not file_path:
             return
         
+        # Strategy seçim dialog'u
+        strategy = self._show_import_strategy_dialog()
+        if not strategy:
+            return  # İptal edildi
+        
         try:
             from core.glossary_csv import import_to_glossary_store
             
-            result = import_to_glossary_store(file_path)
+            result = import_to_glossary_store(file_path, strategy=strategy)
             
-            # Stage 17: Detaylı özet
+            # Stage 19: Çakışma sayısı dahil özet
+            conflicts = result.get('conflicts', 0)
             summary = f"Eklenen: {result['added']}, Güncellenen: {result['updated']}, Atlanan: {result['skipped']}"
+            if conflicts > 0:
+                summary += f", Çakışma: {conflicts}"
             
             if result['added'] > 0 or result['updated'] > 0:
                 InfoBar.success(
@@ -702,6 +712,61 @@ class GlossaryPage(QWidget):
                 duration=3000,
                 position=InfoBarPosition.TOP
             )
+    
+    def _show_import_strategy_dialog(self) -> str:
+        """
+        Import strategy seçim dialog'unu göster (Glossary için).
+        
+        Returns:
+            Seçilen strategy veya None (iptal)
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("İçe Aktarma Stratejisi")
+        dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Açıklama
+        desc = BodyLabel(
+            "Mevcut kayıtlarla çakışan terimler için nasıl davranılsın?"
+        )
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+        
+        # Radio butonlar (Glossary için keep_higher_usecount yok)
+        button_group = QButtonGroup(dialog)
+        
+        strategies = [
+            ("skip", "Atla (Mevcut kaydı koru)"),
+            ("overwrite", "Üzerine Yaz (Gelen ile değiştir)"),
+            ("keep_newest", "En Yeniyi Tut (Timestamp'e göre)"),
+        ]
+        
+        radios = []
+        for i, (value, label) in enumerate(strategies):
+            radio = QRadioButton(label)
+            radio.setProperty("strategy_value", value)
+            if i == 0:
+                radio.setChecked(True)
+            button_group.addButton(radio, i)
+            layout.addWidget(radio)
+            radios.append(radio)
+        
+        # Butonlar
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(dialog.accept)
+        btn_box.rejected.connect(dialog.reject)
+        layout.addWidget(btn_box)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            for radio in radios:
+                if radio.isChecked():
+                    return radio.property("strategy_value")
+            return "skip"  # Default
+        
+        return None  # İptal
     
     def _on_export_csv(self):
         """CSV dosyasına dışa aktar."""

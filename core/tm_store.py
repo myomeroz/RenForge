@@ -170,7 +170,8 @@ class TMStore:
         self,
         source_text: str,
         source_lang: str,
-        target_lang: str
+        target_lang: str,
+        touch: bool = True
     ) -> Optional[TMEntry]:
         """
         Look up exact match in TM.
@@ -179,6 +180,8 @@ class TMStore:
             source_text: Original text to translate
             source_lang: Source language code
             target_lang: Target language code
+            touch: If True, increment use_count and update updated_at (default: True)
+                   Set to False for UI listing/search operations.
         
         Returns:
             TMEntry if exact match found, None otherwise
@@ -197,6 +200,11 @@ class TMStore:
         
         if row:
             logger.debug(f"[TM] Hit: {source_hash[:8]}...")
+            
+            # Stage 20: touch=True ise use_count ve updated_at güncelle
+            if touch:
+                self._touch_entry(row['id'], conn)
+            
             return TMEntry(
                 id=row['id'],
                 source_hash=row['source_hash'],
@@ -206,20 +214,40 @@ class TMStore:
                 target_lang=row['target_lang'],
                 created_at=row['created_at'],
                 updated_at=row['updated_at'],
-                use_count=row['use_count'],
+                use_count=row['use_count'] + (1 if touch else 0),  # Güncel değeri döndür
                 origin=row['origin'] or ""
             )
         
         return None
     
+    def _touch_entry(self, entry_id: int, conn=None):
+        """
+        TM entry'nin use_count ve updated_at alanlarını güncelle.
+        Thread-safe.
+        """
+        if conn is None:
+            conn = self._get_connection()
+        
+        now = datetime.now().isoformat()
+        conn.execute("""
+            UPDATE tm_entries 
+            SET use_count = use_count + 1, updated_at = ?
+            WHERE id = ?
+        """, (now, entry_id))
+        conn.commit()
+    
     def lookup_batch(
         self,
         source_texts: List[str],
         source_lang: str,
-        target_lang: str
+        target_lang: str,
+        touch: bool = True
     ) -> Dict[int, TMEntry]:
         """
         Batch lookup for multiple source texts.
+        
+        Args:
+            touch: If True, increment use_count for found entries (default: True)
         
         Returns:
             Dict mapping index -> TMEntry for found matches
@@ -227,7 +255,7 @@ class TMStore:
         results = {}
         
         for i, text in enumerate(source_texts):
-            entry = self.lookup(text, source_lang, target_lang)
+            entry = self.lookup(text, source_lang, target_lang, touch=touch)
             if entry:
                 results[i] = entry
         
@@ -297,6 +325,87 @@ class TMStore:
             (source_hash,)
         )
         conn.commit()
+    
+    # =========================================================================
+    # UPDATE / DELETE (Stage 20)
+    # =========================================================================
+    
+    def update(
+        self,
+        entry_id: int,
+        target_text: str = None,
+        origin: str = None
+    ) -> bool:
+        """
+        TM entry'sini güncelle.
+        
+        Args:
+            entry_id: Güncellenecek entry ID
+            target_text: Yeni çeviri metni (None ise değişmez)
+            origin: Yeni kaynak (None ise değişmez)
+        
+        Returns:
+            True if successful
+        """
+        if not entry_id:
+            return False
+        
+        conn = self._get_connection()
+        now = datetime.now().isoformat()
+        
+        updates = []
+        params = []
+        
+        if target_text is not None:
+            updates.append("target_text = ?")
+            params.append(target_text.strip())
+        
+        if origin is not None:
+            updates.append("origin = ?")
+            params.append(origin)
+        
+        if not updates:
+            return False
+        
+        updates.append("updated_at = ?")
+        params.append(now)
+        params.append(entry_id)
+        
+        try:
+            query = f"UPDATE tm_entries SET {', '.join(updates)} WHERE id = ?"
+            conn.execute(query, tuple(params))
+            conn.commit()
+            logger.debug(f"[TM] Updated entry {entry_id}")
+            return True
+        except Exception as e:
+            logger.error(f"[TM] Update failed: {e}")
+            return False
+    
+    def delete(self, entry_id: int) -> bool:
+        """
+        TM entry'sini sil.
+        
+        Args:
+            entry_id: Silinecek entry ID
+        
+        Returns:
+            True if successful
+        """
+        if not entry_id:
+            return False
+        
+        conn = self._get_connection()
+        
+        try:
+            cursor = conn.execute("DELETE FROM tm_entries WHERE id = ?", (entry_id,))
+            conn.commit()
+            deleted = cursor.rowcount > 0
+            if deleted:
+                logger.debug(f"[TM] Deleted entry {entry_id}")
+            return deleted
+        except Exception as e:
+            logger.error(f"[TM] Delete failed: {e}")
+            return False
     
     # =========================================================================
     # STATS

@@ -102,6 +102,18 @@ class BatchAIWorker(QRunnable):
                     translated = t_item.get("t")
                     
                     if translated and translated.strip():
+                        # TM kaydı: Bu satır başarılı çeviri aldığı için otomatik eklenir.
+                        try:
+                            self.controller._tm_record(
+                                source_text=all_items[internal_idx],
+                                target_text=translated,
+                                source_lang=self.source_lang,
+                                target_lang=self.target_lang,
+                                origin="gemini"
+                            )
+                        except Exception:
+                            pass
+
                         # Update file model
                         self.parsed_file.update_item_text(real_idx, translated)
                         # Collect for batch UI update
@@ -303,6 +315,17 @@ class BatchGoogleWorker(QRunnable):
                 if not results.get('canceled'):
                     if translated and translated.strip():
                         self.parsed_file.update_item_text(idx, translated)
+                        # TM kaydı (buton yok: başarılı çeviriler otomatik kaydedilir)
+                        try:
+                            self.controller._tm_record(
+                                source_text=text,
+                                target_text=translated,
+                                source_lang=self.source_lang,
+                                target_lang=self.target_lang,
+                                origin="google"
+                            )
+                        except Exception:
+                            pass
                         # Emit with file_path for robust context resolution
                         self.signals.item_updated.emit(idx, translated, {'file_path': self.parsed_file.file_path})
                         results['success_count'] += 1
@@ -374,6 +397,37 @@ class TranslationController(QObject):
         self._is_translating = False
         
         logger.debug("TranslationController initialized")
+
+    # =========================================================================
+    # TM (Translation Memory) HELPERS
+    # =========================================================================
+
+    def _tm_is_enabled(self) -> bool:
+        """TM aktif mi? (Ayar yoksa güvenli biçimde False döndür.)"""
+        try:
+            return bool(getattr(self._settings, 'tm_enabled', False))
+        except Exception:
+            return False
+
+    def _tm_record(self, source_text: str, target_text: str, *, source_lang: str, target_lang: str, origin: str):
+        """Başarılı çeviriyi TM'e kaydet (sessiz, güvenli)."""
+        if not source_text or not target_text:
+            return
+        if not self._tm_is_enabled():
+            return
+
+        try:
+            from core.tm_store import TMStore
+            TMStore.instance().insert(
+                source_text=source_text,
+                target_text=target_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                origin=origin
+            )
+        except Exception as e:
+            # TM yazımı asla çeviriyi bozmasın
+            logger.debug(f"[TM] Kayıt atlandı: {e}")
 
     def check_google_availability(self) -> tuple[bool, Optional[str]]:
         """
@@ -469,6 +523,16 @@ class TranslationController(QObject):
             translator = Translator(source=source, target=target)
             translated = translator.translate(text)
             logger.debug(f"Google translated: '{text[:30]}...' -> '{translated[:30] if translated else 'None'}...'")
+
+            # TM kaydı (buton yok: başarılı çeviriler otomatik kaydedilir)
+            if translated and translated.strip():
+                self._tm_record(
+                    source_text=text,
+                    target_text=translated,
+                    source_lang=source,
+                    target_lang=target,
+                    origin="google"
+                )
             return translated
         except Exception as e:
             logger.error(f"Google translation failed: {e}")
@@ -526,6 +590,16 @@ class TranslationController(QObject):
                 return None
             
             logger.debug(f"AI translated with Gemini")
+
+            # TM kaydı (buton yok: başarılı çeviriler otomatik kaydedilir)
+            if result and result.strip():
+                self._tm_record(
+                    source_text=text,
+                    target_text=result,
+                    source_lang=source,
+                    target_lang=target,
+                    origin="gemini"
+                )
             return result
         except Exception as e:
             logger.error(f"AI translation failed: {e}")
@@ -601,6 +675,14 @@ class TranslationController(QObject):
                 if translated:
                     parsed_file.update_item_text(idx, translated)
                     self.item_translated.emit(idx, translated)
+                    # TM kaydı (başarılı çeviriler otomatik kaydedilir)
+                    self._tm_record(
+                        source_text=text,
+                        target_text=translated,
+                        source_lang=source,
+                        target_lang=target,
+                        origin="google"
+                    )
                     results['success_count'] += 1
                 else:
                     results['error_count'] += 1
@@ -685,6 +767,14 @@ class TranslationController(QObject):
                 if translated and not error_msg:
                     parsed_file.update_item_text(idx, translated)
                     self.item_translated.emit(idx, translated)
+                    # TM kaydı (başarılı çeviriler otomatik kaydedilir)
+                    self._tm_record(
+                        source_text=text,
+                        target_text=translated,
+                        source_lang=source,
+                        target_lang=target,
+                        origin="gemini"
+                    )
                     results['success_count'] += 1
                 else:
                     results['error_count'] += 1
