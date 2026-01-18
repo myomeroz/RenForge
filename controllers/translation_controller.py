@@ -63,6 +63,9 @@ class BatchAIWorker(QRunnable):
         total = len(self.indices)
         results['total'] = total
         
+        # Stage 21: TM metrikleri için context
+        tm_context = {'tm_hits': 0, 'tm_applied': 0}
+        
         # DEBUG: Log what languages we're actually using
         logger.info(f"[BatchAIWorker] Starting batch. source_lang={self.source_lang}, target_lang={self.target_lang}, model={self.model}")
         
@@ -87,6 +90,60 @@ class BatchAIWorker(QRunnable):
             self.signals.finished.emit(results)
             return
         
+        # =================================================================
+        # Stage 21: TM Batch Pre-Check - AI çağrısından önce TM lookup
+        # =================================================================
+        tm_applied_items = []  # UI güncellemesi için
+        ai_items = []          # AI'a gönderilecekler
+        ai_indices_internal = []  # AI item'ları için internal indexler
+        
+        try:
+            from core.tm_precheck import tm_precheck_batch
+            tm_results, remaining_internal = tm_precheck_batch(
+                all_items, self.source_lang, self.target_lang, tm_context
+            )
+            
+            # TM'den alınanları hemen uygula
+            for internal_idx, tm_result in tm_results.items():
+                if tm_result.should_skip_provider:
+                    real_idx = valid_indices[internal_idx]
+                    translated = tm_result.translation
+                    
+                    # Dosya modelini güncelle
+                    self.parsed_file.update_item_text(real_idx, translated)
+                    
+                    # UI güncellemesi için topla
+                    tm_applied_items.append({"index": real_idx, "text": translated, "origin": "tm"})
+                    results['success_count'] += 1
+            
+            # TM applied emit
+            if tm_applied_items:
+                self.signals.item_updated.emit(
+                    -1, "", {"file_path": self.parsed_file.file_path, "batch_items": tm_applied_items}
+                )
+            
+            # Kalanları AI'a gönder
+            for internal_idx in remaining_internal:
+                ai_items.append(all_items[internal_idx])
+                ai_indices_internal.append(internal_idx)
+                
+            logger.info(f"[BatchAIWorker] TM applied: {len(tm_applied_items)}, to AI: {len(ai_items)}")
+            
+        except Exception as e:
+            logger.warning(f"[TM Batch Pre-check] Error: {e}, sending all to AI")
+            ai_items = all_items
+            ai_indices_internal = list(range(len(all_items)))
+        # =================================================================
+        
+        # Eğer tüm itemler TM'den alındıysa AI çağrısı atla
+        if not ai_items:
+            results['tm_hits'] = tm_context['tm_hits']
+            results['tm_applied'] = tm_context['tm_applied']
+            results['processed'] = results['success_count']
+            self.signals.progress.emit(total, total)
+            self.signals.finished.emit(results)
+            return
+        
         # Define progress callback
         def on_chunk_done(processed_count, total_count, chunk_translations):
             # Collect batch items for UI update
@@ -94,18 +151,18 @@ class BatchAIWorker(QRunnable):
             
             # Update file model for all translations in chunk
             for t_item in chunk_translations:
-                internal_idx = t_item.get("i")
-                if internal_idx is not None and internal_idx < len(valid_indices):
-                    real_idx = valid_indices[internal_idx]
-                    translated = t_item.get("t")
-                    
+                ai_internal_idx = t_item.get("i")
+                if ai_internal_idx is not None and ai_internal_idx < len(ai_indices_internal):
+                    # Stage 21: ai_indices_internal -> all_items internal -> valid_indices -> real_idx
+                    original_internal_idx = ai_indices_internal[ai_internal_idx]
+                    real_idx = valid_indices[original_internal_idx]
                     translated = t_item.get("t")
                     
                     if translated and translated.strip():
                         # TM kaydı: Bu satır başarılı çeviri aldığı için otomatik eklenir.
                         try:
                             self.controller._tm_record(
-                                source_text=all_items[internal_idx],
+                                source_text=ai_items[ai_internal_idx],
                                 target_text=translated,
                                 source_lang=self.source_lang,
                                 target_lang=self.target_lang,
@@ -128,19 +185,20 @@ class BatchAIWorker(QRunnable):
                     {"file_path": self.parsed_file.file_path, "batch_items": batch_items}
                 )
             
-            # Emit progress
-            progress_ratio = processed_count / total_count if total_count > 0 else 1
-            progress_value = int(progress_ratio * total)
-            self.signals.progress.emit(progress_value, total)
+            # Emit progress - Stage 21: TM applied olanları da dahil et
+            tm_applied_count = len(tm_applied_items)
+            ai_progress = processed_count
+            total_progress = tm_applied_count + ai_progress
+            self.signals.progress.emit(min(total_progress, total), total)
         
         # Define cancel check callback
         def cancel_check():
             return self._is_canceled
         
         try:
-            # Single call with ALL items
+            # Stage 21: AI'a sadece TM'de olmayanları gönder
             batch_result = ai_module.translate_text_batch_gemini_strict(
-                items=all_items,
+                items=ai_items,  # Stage 21: TM filtrelenmiş liste
                 source_lang=self.source_lang,
                 target_lang=self.target_lang,
                 glossary=getattr(config, 'TRANSLATION_GLOSSARY', None),
@@ -148,17 +206,18 @@ class BatchAIWorker(QRunnable):
                 cancel_check=cancel_check
             )
             
-            # Process final stats
+            # Process final stats - Stage 21: TM applied'ı da ekle
             stats = batch_result.get("stats", {})
-            results['success_count'] = stats.get("success", 0)
+            results['success_count'] += stats.get("success", 0)  # Stage 21: TM'den gelenleri koru
             results['error_count'] = stats.get("failed", 0) + stats.get("fallback", 0)
             results['canceled'] = batch_result.get("canceled", False)
             
-            # Collect errors and failed indices
+            # Collect errors and failed indices - Stage 21: ai_indices_internal kullan
             for err in batch_result.get("errors", []):
-                internal_idx = err.get("i")
-                if internal_idx is not None and internal_idx < len(valid_indices):
-                    real_idx = valid_indices[internal_idx]
+                ai_internal_idx = err.get("i")
+                if ai_internal_idx is not None and ai_internal_idx < len(ai_indices_internal):
+                    original_internal_idx = ai_indices_internal[ai_internal_idx]
+                    real_idx = valid_indices[original_internal_idx]
                     item = self.parsed_file.get_item(real_idx)
                     line_idx = item.line_index if item else real_idx
                     err_msg = err.get('error', 'Unknown error')
@@ -171,18 +230,13 @@ class BatchAIWorker(QRunnable):
                     })
                     results['failed_indices'].append(real_idx)
             
-            # Check for fallbacks and add to failed indices (if considered failure)
-            # User requirement: "fail_count > 0 after a run, “Hatalıları Yeniden Dene” is visible"
-            # Fallbacks are warnings/errors? Usually user wants to retry them to get AI quality.
-            # Let's verify result logic. RenForge usually treats fallback as 'warning' or 'error'?
-            # status['failed'] = len(self._errors)
-            # BatchController uses _errors list length.
-            # Here we append 'Fallback' to results['errors'], so they ARE errors.
+            # Check for fallbacks - Stage 21: ai_indices_internal kullan
             for t_item in batch_result.get("translations", []):
                 if t_item.get("fallback"):
-                    internal_idx = t_item.get("i")
-                    if internal_idx is not None and internal_idx < len(valid_indices):
-                        real_idx = valid_indices[internal_idx]
+                    ai_internal_idx = t_item.get("i")
+                    if ai_internal_idx is not None and ai_internal_idx < len(ai_indices_internal):
+                        original_internal_idx = ai_indices_internal[ai_internal_idx]
+                        real_idx = valid_indices[original_internal_idx]
                         item = self.parsed_file.get_item(real_idx)
                         line_idx = item.line_index if item else real_idx
                         fail_reason = t_item.get('error_reason', 'validation failed')
@@ -194,30 +248,21 @@ class BatchAIWorker(QRunnable):
                              'code': 'VALIDATION_ERROR'
                         })
                         results['failed_indices'].append(real_idx)
-
-            # Explicit check for empty results in processed items logic is difficult here because processing happens in chunks.
-            # However, translated.strip() check above prevents empty writes.
-            # We must ensure that items NOT updated are treated as failed if they were supposed to be translated?
-            # AI worker logic relies on 'errors' list from backend. 
-            # If backend returns "t": "" (empty string) causing skip above, it won't be in errors list automatically.
-            # We need to catch that.
-            
-            # Re-scan for "success" that was actually skipped?
-            # Actually, if it's skipped above, 'success' count from stats might still count it?
-            # We should rely on `stats` from `translate_text_batch_gemini_strict`.
-            # That function handles Empty Result detection internally if we update `renforge_ai`?
-            # Let's check renforge_ai.py later. For now, strict check here prevents data corruption.
                         
         except Exception as e:
             import traceback
             error_trace = traceback.format_exc()
             logger.error(f"BatchAIWorker Error details:\n{error_trace}")
             
-            results['error_count'] = len(all_items)
+            results['error_count'] = len(ai_items) if ai_items else len(all_items)
             results['errors'].append(f"Batch Error: {str(e)}")
-            # If batch crashes, ALL indices are failed
-            results['failed_indices'] = list(valid_indices)
+            # If batch crashes, AI gönderilen indexler failed
+            for ai_idx in ai_indices_internal:
+                results['failed_indices'].append(valid_indices[ai_idx])
         
+        # Stage 21: TM metriklerini results'a ekle
+        results['tm_hits'] = tm_context['tm_hits']
+        results['tm_applied'] = tm_context['tm_applied']
         results['processed'] = results['success_count'] + results['error_count']
         self.signals.progress.emit(total, total)
         self.signals.finished.emit(results)
@@ -247,6 +292,9 @@ class BatchGoogleWorker(QRunnable):
         total = len(self.indices)
         results['total'] = total
         
+        # Stage 21: TM metrikleri için context
+        tm_context = {'tm_hits': 0, 'tm_applied': 0}
+        
         # Init translator
         try:
             Translator = ai._lazy_import_translator()
@@ -268,16 +316,6 @@ class BatchGoogleWorker(QRunnable):
         for i, idx in enumerate(self.indices):
             if self._is_canceled:
                 results['canceled'] = True
-                # Remaining items are effectively failed/skipped, but typically we just stop
-                # User might want to retry them? 
-                # "If the last run ended with CANCELED ... optional resume"
-                # For basic retry, we can consider canceled items as 'not processed' or 'failed'.
-                # Let's add remaining to failed_indices so Retry works for them too if desired.
-                # BUT user requirement F says "Resume" is optional.
-                # Requirement A says "fail_count > 0".
-                # If we cancel, fail_count might be 0.
-                # But retry logic logic just takes indices.
-                # Let's stick to explicitly failed items for now.
                 break
             
             item = self.parsed_file.get_item(idx)
@@ -288,6 +326,28 @@ class BatchGoogleWorker(QRunnable):
             if not text or not text.strip():
                 self.signals.progress.emit(i + 1, total)
                 continue
+            
+            # =================================================================
+            # Stage 21: TM Pre-Check - Provider çağrısından önce TM lookup
+            # =================================================================
+            try:
+                from core.tm_precheck import tm_precheck
+                tm_result = tm_precheck(text, self.source_lang, self.target_lang, tm_context)
+                
+                if tm_result.should_skip_provider:
+                    # TM'den çeviri alındı, provider atla
+                    translated = tm_result.translation
+                    self.parsed_file.update_item_text(idx, translated)
+                    # origin="tm" olarak işaretle
+                    if hasattr(item, 'translation_origin'):
+                        item.translation_origin = "tm"
+                    self.signals.item_updated.emit(idx, translated, {'file_path': self.parsed_file.file_path, 'origin': 'tm'})
+                    results['success_count'] += 1
+                    self.signals.progress.emit(i + 1, total)
+                    continue  # Provider'ı atla
+            except Exception as e:
+                logger.warning(f"[TM Pre-check] Error: {e}")
+            # =================================================================
             
             try:
                 # Soft Retry Loop (2 attempts)
@@ -356,6 +416,9 @@ class BatchGoogleWorker(QRunnable):
             if not self._is_canceled:
                 time.sleep(getattr(config, 'BATCH_TRANSLATE_DELAY', 0.1))
         
+        # Stage 21: TM metriklerini result'a ekle
+        results['tm_hits'] = tm_context['tm_hits']
+        results['tm_applied'] = tm_context['tm_applied']
         results['processed'] = results['success_count'] + results['error_count']
         self.signals.finished.emit(results)
 

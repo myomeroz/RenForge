@@ -249,6 +249,10 @@ class BatchController(QObject):
             # errors list may not be populated, use count
             pass  # self._errors is already updated via handle_error calls
         
+        # Stage 21: TM metriklerini sakla
+        self._tm_hits = results.get('tm_hits', 0)
+        self._tm_applied = results.get('tm_applied', 0)
+        
         # Clear active worker reference
         self._active_worker = None
         
@@ -1450,6 +1454,10 @@ class BatchController(QObject):
             elif self._batch_start_time:
                 duration_ms = int((datetime.now() - self._batch_start_time).total_seconds() * 1000)
             
+            # Stage 21: TM metriklerini al (worker results'tan)
+            tm_hits = getattr(self, '_tm_hits', 0) or 0
+            tm_applied = getattr(self, '_tm_applied', 0) or 0
+            
             # Create record
             record = RunRecord(
                 timestamp=datetime.now().isoformat(sep=' ', timespec='seconds'),
@@ -1471,7 +1479,9 @@ class BatchController(QObject):
                 error_row_ids=error_row_ids,  # Stage 8.2
                 qc_row_ids=qc_row_ids,        # Stage 8.2
                 error_category_counts=error_category_counts,
-                qc_code_counts=qc_code_counts
+                qc_code_counts=qc_code_counts,
+                tm_hits=tm_hits,          # Stage 21
+                tm_applied=tm_applied     # Stage 21
             )
             
             # Save to store
