@@ -37,10 +37,12 @@ class TrendStats:
     count: int = 0
     avg_errors: float = 0.0
     avg_duration_ms: float = 0.0
-    error_free_rate: float = 0.0  # Percentage 0-100
+    median_duration_ms: float = 0.0  # Stage 12.2
+    error_free_rate: float = 0.0  # Percentage 0-100 (run-level)
+    line_success_rate: float = -1.0  # Percentage 0-100 (line-level), -1 = N/A
     
-    # Problematic models: [(model_name, total_errors)]
-    problematic_models: List[Tuple[str, int]] = field(default_factory=list)
+    # Problematic models: [(model_name, error_rate)]
+    problematic_models: List[Tuple[str, float]] = field(default_factory=list)
     
     # Series for charting (chronological)
     error_series: List[int] = field(default_factory=list)
@@ -107,37 +109,72 @@ def compute_trends(runs: List[RunRecord], last_n: int = 10) -> TrendStats:
     if not runs:
         return stats
         
-    # Take last N (assumes runs are sorted chronological or we sort them)
-    # Usually history store returns appended list, so last = newest.
-    # We want valid runs for analysis.
-    
-    # Filter valid runs? Or take all? Take all.
+    # Take last N runs (newest last in list)
     target_runs = runs[-last_n:]
     stats.count = len(target_runs)
     
     total_errors = 0
     total_duration = 0
     error_free_count = 0
-    model_errors = Counter()
+    durations = []
+    
+    # Line-level aggregation
+    total_processed = 0
+    total_success = 0
+    
+    # Model tracking: {model: {'errors': int, 'processed': int}}
+    model_stats = {}
     
     for r in target_runs:
         total_errors += r.errors_count
         total_duration += r.duration_ms
+        durations.append(r.duration_ms)
+        
         if r.errors_count == 0:
             error_free_count += 1
             
         stats.error_series.append(r.errors_count)
         stats.duration_series.append(r.duration_ms)
         
-        # Track problematic models
-        if r.model and r.errors_count > 0:
-            model_errors[r.model] += r.errors_count
+        # Line-level stats
+        if r.processed > 0:
+            total_processed += r.processed
+            total_success += r.success_updated
+        
+        # Track model errors
+        model_key = r.model or r.provider or "unknown"
+        if model_key not in model_stats:
+            model_stats[model_key] = {'errors': 0, 'processed': 0}
+        model_stats[model_key]['errors'] += r.errors_count
+        model_stats[model_key]['processed'] += r.processed
             
     if stats.count > 0:
         stats.avg_errors = total_errors / stats.count
         stats.avg_duration_ms = total_duration / stats.count
         stats.error_free_rate = (error_free_count / stats.count) * 100.0
         
-    stats.problematic_models = model_errors.most_common(3)
+        # Median duration
+        sorted_durations = sorted(durations)
+        mid = len(sorted_durations) // 2
+        if len(sorted_durations) % 2 == 0 and len(sorted_durations) > 1:
+            stats.median_duration_ms = (sorted_durations[mid - 1] + sorted_durations[mid]) / 2
+        elif sorted_durations:
+            stats.median_duration_ms = sorted_durations[mid]
+    
+    # Line success rate
+    if total_processed > 0:
+        stats.line_success_rate = (total_success / total_processed) * 100.0
+    
+    # Problematic models (by error rate > 5%)
+    problematic = []
+    for model, data in model_stats.items():
+        if data['processed'] > 0:
+            error_rate = data['errors'] / data['processed']
+            if error_rate > 0.05:  # More than 5% errors
+                problematic.append((model, round(error_rate * 100, 1)))
+    
+    # Sort by error rate descending
+    stats.problematic_models = sorted(problematic, key=lambda x: x[1], reverse=True)[:3]
     
     return stats
+

@@ -504,33 +504,39 @@ class CompareCard(CardWidget):
         self._current_run = current
         self._all_runs = all_runs
         
-        current_baseline_idx = self.baseline_combo.currentIndex()
-        old_baseline_data = self.baseline_combo.currentData()
+        # Store mapping of combo index to run index
+        self._combo_to_run_idx = {}
+        
+        old_selection = self.baseline_combo.currentIndex()
         
         self.baseline_combo.blockSignals(True)
         self.baseline_combo.clear()
         
         # Add "Previous Run" option (dynamic)
-        self.baseline_combo.addItem("Önceki Çalıştırma (Otomatik)", "PREVIOUS")
+        self.baseline_combo.addItem("Önceki Çalıştırma (Otomatik)")
+        self._combo_to_run_idx[0] = "PREVIOUS"
         
-        for r in reversed(all_runs): # Newest first
-            if r == current:
+        combo_idx = 1
+        for i, r in enumerate(reversed(all_runs)):  # Newest first
+            if r.timestamp == current.timestamp:
                 continue 
             
             # Format: "YYYY-MM-DD HH:MM | File | Model"
-            label = f"{r.timestamp} | {r.file_name or 'Unknown'} | {r.model or '-'}"
-            self.baseline_combo.addItem(label, r)
+            label = f"{r.timestamp[:16]} | {r.file_name or 'Unknown'} | {r.model or '-'}"
+            self.baseline_combo.addItem(label)
+            # Store actual index in all_runs (reversed order mapping)
+            actual_idx = len(all_runs) - 1 - i
+            self._combo_to_run_idx[combo_idx] = actual_idx
+            combo_idx += 1
             
         self.baseline_combo.blockSignals(False)
         
         # Restore selection or default
-        if old_baseline_data and old_baseline_data != "PREVIOUS":
-             idx = self.baseline_combo.findData(old_baseline_data)
-             if idx >= 0:
-                 self.baseline_combo.setCurrentIndex(idx)
+        if old_selection > 0 and old_selection < self.baseline_combo.count():
+            self.baseline_combo.setCurrentIndex(old_selection)
         else:
-             self.baseline_combo.setCurrentIndex(0) # Previous
-             
+            self.baseline_combo.setCurrentIndex(0)  # Previous
+            
         self._update_display()
         
     def _on_baseline_changed(self):
@@ -538,26 +544,53 @@ class CompareCard(CardWidget):
         
     def _update_display(self):
         if not self._current_run or not self._all_runs:
-            self._clear_display()
+            self._clear_display("Karşılaştırma için çalışma verisi yok.")
+            return
+        
+        if not hasattr(self, '_combo_to_run_idx'):
+            self._clear_display("Karşılaştırma verisi henüz yüklenmedi.")
             return
             
-        # Determine baseline
-        baseline_data = self.baseline_combo.currentData()
-        baseline = None
+        # Determine baseline using combo index mapping
+        combo_idx = self.baseline_combo.currentIndex()
+        mapped_value = self._combo_to_run_idx.get(combo_idx, "PREVIOUS")
         
-        if baseline_data == "PREVIOUS":
-            # Find index of current run in all_runs (assuming sorted chronological)
-            try:
-                curr_idx = self._all_runs.index(self._current_run)
-                if curr_idx > 0:
-                    baseline = self._all_runs[curr_idx - 1]
-            except ValueError:
-                pass
+        baseline = None
+        is_oldest_run = False
+        
+        if mapped_value == "PREVIOUS":
+            # Find current run's position by comparing timestamps
+            current_ts = self._current_run.timestamp
+            current_idx = -1
+            
+            for i, r in enumerate(self._all_runs):
+                if r.timestamp == current_ts:
+                    current_idx = i
+                    break
+            
+            if current_idx == -1:
+                # Fallback: try object identity
+                try:
+                    current_idx = self._all_runs.index(self._current_run)
+                except ValueError:
+                    current_idx = -1
+            
+            if current_idx > 0:
+                # Previous run exists (older run)
+                baseline = self._all_runs[current_idx - 1]
+            elif current_idx == 0:
+                # This is the oldest run
+                is_oldest_run = True
         else:
-            baseline = baseline_data
+            # mapped_value is an index into _all_runs
+            if isinstance(mapped_value, int) and 0 <= mapped_value < len(self._all_runs):
+                baseline = self._all_runs[mapped_value]
             
         if not baseline:
-            self._clear_display("Referans çalışma bulunamadı.")
+            if is_oldest_run:
+                self._clear_display("Bu çalışma için önceki bir referans yok. Karşılaştırmak için başka bir referans seçin.")
+            else:
+                self._clear_display("Referans çalışma bulunamadı.")
             return
 
         # Compute Deltas
@@ -678,27 +711,62 @@ class TrendCard(CardWidget):
             
         stats = compute_trends(self._runs, n)
         
-        # Clear stats
+        # Clear stats layout
         while self.stats_layout.count():
             c = self.stats_layout.takeAt(0)
-            if c.widget(): c.widget().deleteLater()
+            if c.widget(): 
+                c.widget().deleteLater()
+            elif c.layout():
+                # Clear nested layout
+                while c.layout().count():
+                    item = c.layout().takeAt(0)
+                    if item.widget():
+                        item.widget().deleteLater()
             
-        # Add summary blocks
+        # Helper: Format duration
+        def fmt_dur(ms):
+            if ms < 1000:
+                return f"{int(ms)}ms"
+            elif ms < 60000:
+                return f"{ms/1000:.1f}s"
+            else:
+                mins = int(ms // 60000)
+                secs = int((ms % 60000) / 1000)
+                return f"{mins}m {secs}s"
+        
+        # Add summary blocks (exactly 5 KPIs)
         def add_stat(label, val):
-            vbox = QVBoxLayout()
+            container = QWidget()
+            vbox = QVBoxLayout(container)
+            vbox.setContentsMargins(0, 0, 0, 0)
+            vbox.setSpacing(2)
             lbl = BodyLabel(label)
             lbl.setStyleSheet("color: #666;")
             vbox.addWidget(lbl)
             vbox.addWidget(TitleLabel(val))
-            self.stats_layout.addLayout(vbox)
-            
-        add_stat("Ort. Hata", f"{stats.avg_errors:.1f}")
-        add_stat("Ort. Süre", f"{stats.avg_duration_ms/1000:.1f}s")
-        add_stat("Hatasız Oranı", f"%{stats.error_free_rate:.0f}")
+            self.stats_layout.addWidget(container)
         
-        # Problems
+        # 1. Ort. Hata
+        add_stat("Ort. Hata", f"{stats.avg_errors:.1f}")
+        
+        # 2. Ort. Süre
+        add_stat("Ort. Süre", fmt_dur(stats.avg_duration_ms))
+        
+        # 3. Medyan Süre
+        add_stat("Medyan Süre", fmt_dur(stats.median_duration_ms))
+        
+        # 4. Hatasız Çalışma Oranı (run-level)
+        add_stat("Hatasız Çalışma", f"%{int(round(stats.error_free_rate))}")
+        
+        # 5. Hatasız Satır Oranı (line-level)
+        if stats.line_success_rate >= 0:
+            add_stat("Satır Başarısı", f"%{int(round(stats.line_success_rate))}")
+        else:
+            add_stat("Satır Başarısı", "—")
+        
+        # Problematic Models
         if stats.problematic_models:
-            probs = [f"{m}: {c} hata" for m,c in stats.problematic_models]
+            probs = [f"{m}: %{rate} hata oranı" for m, rate in stats.problematic_models]
             self.problem_label.setText("En Sorunlu Modeller:\n" + "\n".join(probs))
         else:
             self.problem_label.setText("Sorunlu model tespit edilmedi.")
