@@ -321,8 +321,9 @@ class BatchController(QObject):
             self._cancelled = False
             
             # Stage 11: Initialize start time
-            self._batch_start_time = datetime.now()
+            from datetime import datetime
             import time
+            self._batch_start_time = datetime.now()
             self._batch_start_time_mono = time.perf_counter()
         else:
             # For retry, we reset current run counters but KEEP the master failed list derived from previous run

@@ -14,10 +14,12 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import (
     BodyLabel, SubtitleLabel, StrongBodyLabel, TitleLabel,
     PushButton, CardWidget, FluentIcon as FIF,
-    InfoBar, InfoBarPosition
+    InfoBar, InfoBarPosition, ComboBox, SegmentedWidget
 )
 
 from renforge_logger import get_logger
+from core.run_history_store import RunHistoryStore, RunRecord
+from core.run_analytics import compute_run_deltas, compute_trends
 
 logger = get_logger("gui.pages.health")
 
@@ -451,6 +453,256 @@ class RunDetailsCard(CardWidget):
                 item = layout.takeAt(0)
                 if item.widget():
                     item.widget().deleteLater()
+
+class CompareCard(CardWidget):
+    """Card for comparing selected run with baseline (Stage 12)."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        
+        # Header
+        header_layout = QHBoxLayout()
+        icon = FIF.COMPLETED.icon()
+        icon_label = BodyLabel()
+        icon_label.setPixmap(icon.pixmap(18, 18))
+        header_layout.addWidget(icon_label)
+        
+        title = StrongBodyLabel("Karşılaştırma")
+        header_layout.addWidget(title)
+        
+        self.baseline_combo = ComboBox()
+        self.baseline_combo.setPlaceholderText("Referans Seçin...")
+        self.baseline_combo.setMinimumWidth(200)
+        self.baseline_combo.currentIndexChanged.connect(self._on_baseline_changed)
+        header_layout.addStretch()
+        header_layout.addWidget(self.baseline_combo)
+        
+        layout.addLayout(header_layout)
+        
+        # Content
+        self.content_layout = QGridLayout()
+        self.content_layout.setVerticalSpacing(8)
+        self.content_layout.setHorizontalSpacing(16)
+        layout.addLayout(self.content_layout)
+        
+        # Details (Top changes)
+        self.changes_label = BodyLabel()
+        self.changes_label.setWordWrap(True)
+        self.changes_label.setStyleSheet("color: #666;")
+        layout.addWidget(self.changes_label)
+        
+        self._current_run = None
+        self._baseline_run = None
+        self._all_runs = []
+    
+    def set_runs(self, current: RunRecord, all_runs: list):
+        """Update the comparison view."""
+        self._current_run = current
+        self._all_runs = all_runs
+        
+        current_baseline_idx = self.baseline_combo.currentIndex()
+        old_baseline_data = self.baseline_combo.currentData()
+        
+        self.baseline_combo.blockSignals(True)
+        self.baseline_combo.clear()
+        
+        # Add "Previous Run" option (dynamic)
+        self.baseline_combo.addItem("Önceki Çalıştırma (Otomatik)", "PREVIOUS")
+        
+        for r in reversed(all_runs): # Newest first
+            if r == current:
+                continue 
+            
+            # Format: "YYYY-MM-DD HH:MM | File | Model"
+            label = f"{r.timestamp} | {r.file_name or 'Unknown'} | {r.model or '-'}"
+            self.baseline_combo.addItem(label, r)
+            
+        self.baseline_combo.blockSignals(False)
+        
+        # Restore selection or default
+        if old_baseline_data and old_baseline_data != "PREVIOUS":
+             idx = self.baseline_combo.findData(old_baseline_data)
+             if idx >= 0:
+                 self.baseline_combo.setCurrentIndex(idx)
+        else:
+             self.baseline_combo.setCurrentIndex(0) # Previous
+             
+        self._update_display()
+        
+    def _on_baseline_changed(self):
+        self._update_display()
+        
+    def _update_display(self):
+        if not self._current_run or not self._all_runs:
+            self._clear_display()
+            return
+            
+        # Determine baseline
+        baseline_data = self.baseline_combo.currentData()
+        baseline = None
+        
+        if baseline_data == "PREVIOUS":
+            # Find index of current run in all_runs (assuming sorted chronological)
+            try:
+                curr_idx = self._all_runs.index(self._current_run)
+                if curr_idx > 0:
+                    baseline = self._all_runs[curr_idx - 1]
+            except ValueError:
+                pass
+        else:
+            baseline = baseline_data
+            
+        if not baseline:
+            self._clear_display("Referans çalışma bulunamadı.")
+            return
+
+        # Compute Deltas
+        delta = compute_run_deltas(self._current_run, baseline)
+        
+        # Clear layout
+        while self.content_layout.count():
+            child = self.content_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+                
+        # Add Delta Badges
+        # Columns: Metric | Cur | Baseline | Delta
+        
+        headers = ["Metrik", "Seçili", "Referans", "Fark"]
+        for c, h in enumerate(headers):
+             l = StrongBodyLabel(h)
+             self.content_layout.addWidget(l, 0, c)
+             
+        metrics = [
+            ("Hatalar", self._current_run.errors_count, baseline.errors_count, delta.error_delta, True), # True=Lower is better
+            ("QC Sorunları", self._current_run.qc_count_total, baseline.qc_count_total, delta.qc_delta, True),
+            ("Süre (ms)", self._current_run.duration_ms, baseline.duration_ms, delta.duration_delta_ms, True),
+            ("Başarılı", self._current_run.success_updated, baseline.success_updated, delta.success_delta, False) # Higher is better
+        ]
+        
+        for r, (name, cur, base, chg, lower_better) in enumerate(metrics, 1):
+            self.content_layout.addWidget(BodyLabel(name), r, 0)
+            self.content_layout.addWidget(BodyLabel(str(cur)), r, 1)
+            self.content_layout.addWidget(BodyLabel(str(base)), r, 2)
+            
+            # Change badge
+            prefix = "+" if chg > 0 else ""
+            lbl = StrongBodyLabel(f"{prefix}{chg}")
+            
+            # Color logic
+            is_good = False
+            if chg == 0:
+                color = "#888" # Grey
+            elif lower_better:
+                is_good = chg < 0
+            else:
+                is_good = chg > 0
+                
+            if chg != 0:
+                color = "#2da44e" if is_good else "#cf222e" # Green/Red matches GitHub style
+                lbl.setStyleSheet(f"color: {color}; font-weight: bold;")
+            else:
+                lbl.setStyleSheet("color: #888;")
+                
+            self.content_layout.addWidget(lbl, r, 3)
+            
+        # Top Changes Text
+        txt = ""
+        if delta.is_legacy:
+            txt = "Detaylı karşılaştırma için modern çalışma verisi gerekli."
+        else:
+            changes = []
+            if delta.top_error_increases:
+                changes.append("Artış (Hata): " + ", ".join([f"{c} (+{v})" for c,v in delta.top_error_increases]))
+            if delta.top_error_decreases:
+                changes.append("Azalış (Hata): " + ", ".join([f"{c} ({v})" for c,v in delta.top_error_decreases]))
+            
+            txt = "\n".join(changes) if changes else "Kategori bazında önemli değişiklik yok."
+            
+        self.changes_label.setText(txt)
+
+    def _clear_display(self, msg="Karşılaştırma için veri yok."):
+         # simple reset
+         while self.content_layout.count():
+            child = self.content_layout.takeAt(0)
+            if child.widget(): child.widget().deleteLater()
+         self.changes_label.setText(msg)
+
+class TrendCard(CardWidget):
+    """Card for trend analysis stats (Stage 12)."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Header
+        header = QHBoxLayout()
+        header.addWidget(StrongBodyLabel("Trend Analizi"))
+        
+        self.seg_widget = SegmentedWidget()
+        self.seg_widget.addItem("5", "Son 5")
+        self.seg_widget.addItem("10", "Son 10")
+        self.seg_widget.addItem("20", "Son 20")
+        self.seg_widget.setCurrentItem("10")
+        self.seg_widget.currentItemChanged.connect(self._on_n_changed)
+        header.addStretch()
+        header.addWidget(self.seg_widget)
+        layout.addLayout(header)
+        
+        self.stats_layout = QHBoxLayout()
+        layout.addLayout(self.stats_layout)
+        
+        self.problem_label = BodyLabel()
+        self.problem_label.setWordWrap(True)
+        layout.addWidget(self.problem_label)
+        
+        self._runs = []
+        
+    def set_runs(self, runs: list):
+        self._runs = runs
+        self._update()
+        
+    def _on_n_changed(self, *args):
+        self._update()
+        
+    def _update(self):
+        try:
+            n = int(self.seg_widget.currentItem().routeKey())
+        except:
+            n = 10
+            
+        stats = compute_trends(self._runs, n)
+        
+        # Clear stats
+        while self.stats_layout.count():
+            c = self.stats_layout.takeAt(0)
+            if c.widget(): c.widget().deleteLater()
+            
+        # Add summary blocks
+        def add_stat(label, val):
+            vbox = QVBoxLayout()
+            lbl = BodyLabel(label)
+            lbl.setStyleSheet("color: #666;")
+            vbox.addWidget(lbl)
+            vbox.addWidget(TitleLabel(val))
+            self.stats_layout.addLayout(vbox)
+            
+        add_stat("Ort. Hata", f"{stats.avg_errors:.1f}")
+        add_stat("Ort. Süre", f"{stats.avg_duration_ms/1000:.1f}s")
+        add_stat("Hatasız Oranı", f"%{stats.error_free_rate:.0f}")
+        
+        # Problems
+        if stats.problematic_models:
+            probs = [f"{m}: {c} hata" for m,c in stats.problematic_models]
+            self.problem_label.setText("En Sorunlu Modeller:\n" + "\n".join(probs))
+        else:
+            self.problem_label.setText("Sorunlu model tespit edilmedi.")
+
 class HealthPage(QWidget):
     """
     Health dashboard page showing project stats and run history.
@@ -572,18 +824,33 @@ class HealthPage(QWidget):
         left_col.addStretch()
         grid_layout.addLayout(left_col, 1)
         
-        # Middle column: Run Details (Stage 9)
+        # Middle column: Run Details + Analytics (Stage 12)
+        middle_layout = QVBoxLayout()
+        middle_layout.setSpacing(16)
+        
         self.run_details = RunDetailsCard()
         self.run_details.item_clicked.connect(self._on_detail_item_clicked)
         self.run_details.copy_btn.clicked.connect(self._on_copy_report)
         self.run_details.save_md_btn.clicked.connect(self._on_save_report_md)
         self.run_details.save_json_btn.clicked.connect(self._on_save_report_json)
         self.run_details.debug_bundle_btn.clicked.connect(self._on_copy_debug_bundle)
-        grid_layout.addWidget(self.run_details, 2)  # Double width
+        middle_layout.addWidget(self.run_details)
+        
+        # Analytics Cards
+        self.compare_card = CompareCard()
+        middle_layout.addWidget(self.compare_card)
+        
+        self.trend_card = TrendCard()
+        middle_layout.addWidget(self.trend_card)
+        
+        middle_layout.addStretch() # Ensure cards are top-aligned if meaningful
+        
+        grid_layout.addLayout(middle_layout, 2)  # Middle gets flex 2
         
         # Right column: Trend
-        self.trend_card = TrendListCard("Son Çalıştırmalar")
-        grid_layout.addWidget(self.trend_card, 1)
+        self.run_trend = TrendListCard("Son Çalıştırmalar")
+        self.run_trend.run_selected.connect(self._on_run_selected)
+        grid_layout.addWidget(self.run_trend, 1)
         
         content_layout.addLayout(grid_layout)
         
@@ -617,8 +884,8 @@ class HealthPage(QWidget):
     
     def _connect_signals(self):
         """Connect internal signals."""
-        # Connect run selection from trend list
-        self.trend_card.run_selected.connect(self._on_run_selected)
+        # Run selection is already connected in _setup_ui via run_trend.run_selected
+        pass
     
     def _on_run_selected(self, index: int):
         """Handle run selection from trend list."""
@@ -712,8 +979,15 @@ class HealthPage(QWidget):
         self.error_categories.set_items(stats.get('error_category_totals', []))
         self.qc_categories.set_items(stats.get('qc_code_totals', []))
         
-        # Update trend
+        # Update trend analytics
         self.trend_card.set_runs(runs)
+        
+        # Update run history list (TrendListCard)
+        self.run_trend.set_runs(runs)
+        
+        # Update compare card (Stage 12)
+        if self._selected_run and runs:
+            self.compare_card.set_runs(self._selected_run, runs)
         
         # Update run details (Stage 9)
         self.run_details.set_run(self._selected_run, self._format_duration_ms)
